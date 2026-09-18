@@ -1,4 +1,14 @@
-"""Qt-safe desktop adapter for the unified local retrieval backend."""
+"""Qt-safe desktop adapter for the unified local retrieval backend.
+
+Legacy / retired from the production GUI path as of V0.6: `app.ui.main_window`
+no longer imports or constructs `DesktopSearchService` - it uses
+`app.ui.core_search_adapter.CoreSearchAdapter` (a thin client of the
+persistent Research Assistant Core Service, see `app.core_service`)
+instead, so retrieval and the semantic model are owned once by the Core
+process rather than reloaded by a fresh per-call subprocess here. This
+module is kept only because `tests/test_desktop_search.py` still exercises
+it; it is not called from anywhere in the production desktop GUI.
+"""
 
 from dataclasses import asdict
 import argparse

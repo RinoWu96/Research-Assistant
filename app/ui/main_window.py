@@ -17,14 +17,24 @@ from PySide6.QtWidgets import (
 
 from app.config import DATABASE_PATH, ZOTERO_FAST_API_URL
 from app.evidence.models import EvidencePack, PaperEvidence
+from app.external_api.mcp_schemas import FindEvidenceResult
 from app.parser.pdf_parser import render_page
 from app.search.database import Database
 from app.search.indexer import Indexer
-from app.search.desktop_search import DesktopSearchService
 from app.search.hybrid_search import HybridResult
 from app.search.text import normalized_with_offsets, query_terms
+from app.ui.core_process_manager import UNAVAILABLE, CoreMonitor, CoreProcessManager
+from app.ui.core_search_adapter import CoreSearchAdapter
 from app.ui.worker import Worker
 from app.zotero.client import ZoteroClient
+
+# The desktop GUI's Search/Evidence Pack/Evidence Report modes are all
+# clients of the persistent Research Assistant Core Service (V0.6) - see
+# app.ui.core_search_adapter.CoreSearchAdapter and
+# app.ui.core_process_manager.CoreProcessManager. The GUI no longer
+# constructs app.search.desktop_search.DesktopSearchService (retired from
+# the production GUI path, kept only for its own tests - see that
+# module's docstring).
 
 
 def plain_title(value: str) -> str:
@@ -36,7 +46,7 @@ class MainWindow(QMainWindow):
     requested = Signal(str, object)
 
     def __init__(self, database_path: Path = DATABASE_PATH, *, auto_connect: bool = True,
-                 initial_query: str = "") -> None:
+                 auto_connect_core: bool = True, initial_query: str = "") -> None:
         super().__init__()
         self.database_path = database_path
         self.results: list[HybridResult] = []
@@ -48,11 +58,20 @@ class MainWindow(QMainWindow):
         self.last_search = None
         self.evidence_pack: EvidencePack | None = None
         self.evidence_checks: list[tuple[QCheckBox, PaperEvidence]] = []
+        self.evidence_report: FindEvidenceResult | None = None
+        # The Core Service owns retrieval/evidence resources (V0.6); the GUI
+        # only holds a thin CoreSearchAdapter once the Core is known to be
+        # reachable, and never falls back to a local heavy-model path.
+        self.search_service: CoreSearchAdapter | None = None
+        self.core_state = "STARTING"
+        self.core_status_payload: dict = {}
+        self.core_manager = CoreProcessManager()
+        self.core_monitor = CoreMonitor(self.core_manager)
+        self.core_monitor.state_changed.connect(self._core_state_changed)
         self.setWindowTitle("Research Assistant")
         self.resize(1280, 850)
         self.setMinimumSize(980, 660)
         self._build_ui()
-        self.search_service = DesktopSearchService(self.database_path)
         self.query.setText(initial_query)
         self.thread = QThread(self)
         self.worker = Worker()
@@ -64,8 +83,11 @@ class MainWindow(QMainWindow):
         self.thread.finished.connect(self.worker.deleteLater)
         self.thread.start()
         self._load_cached()
+        self._update_search_availability()
         if auto_connect:
             QTimer.singleShot(0, self.refresh_zotero)
+        if auto_connect_core:
+            QTimer.singleShot(0, self.core_monitor.start)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -84,6 +106,11 @@ class MainWindow(QMainWindow):
         self.semantic_status = QLabel("Semantic index · checking")
         self.semantic_status.setObjectName("semanticStatus")
         header.addWidget(self.semantic_status)
+        self.core_status = QLabel("Core · checking")
+        self.core_status.setObjectName("coreStatus")
+        self.core_status.setToolTip("Research Assistant Core Service: the persistent process that owns "
+                                    "retrieval and the semantic model. Search and Evidence modes need it.")
+        header.addWidget(self.core_status)
         layout.addLayout(header)
         subtitle = QLabel("本地文献检索  /  每条结果都有原文和 PDF 页码")
         subtitle.setStyleSheet("color: #60758a")
@@ -117,6 +144,7 @@ class MainWindow(QMainWindow):
         self.app_mode = QComboBox()
         self.app_mode.addItem("Search", "search")
         self.app_mode.addItem("Evidence Pack", "evidence")
+        self.app_mode.addItem("Evidence Report", "evidence_report")
         self.app_mode.currentIndexChanged.connect(self._app_mode_changed)
         search_row.addWidget(self.app_mode)
         search_row.addWidget(QLabel("搜索模式"))
@@ -270,9 +298,28 @@ class MainWindow(QMainWindow):
         self.evidence_scroll.setWidget(self.evidence_content)
         evidence_layout.addWidget(self.evidence_scroll, 1)
 
+        self.evidence_report_view = QWidget()
+        report_layout = QVBoxLayout(self.evidence_report_view)
+        report_header = QHBoxLayout()
+        self.evidence_report_summary = QLabel(
+            "输入研究问题或科学主张，查看按 DIRECT/SECONDARY/LIMITING/CONTEXTUAL/UNCERTAIN 分类的 Evidence Report。")
+        self.evidence_report_summary.setWordWrap(True)
+        report_header.addWidget(self.evidence_report_summary, 1)
+        self.copy_report_button = QPushButton("Copy Evidence Report")
+        self.copy_report_button.setEnabled(False)
+        self.copy_report_button.clicked.connect(self.copy_evidence_report)
+        report_header.addWidget(self.copy_report_button)
+        report_layout.addLayout(report_header)
+        self.evidence_report_text = QPlainTextEdit()
+        self.evidence_report_text.setReadOnly(True)
+        self.evidence_report_text.setPlaceholderText(
+            "结构化 Evidence Report：分类、原文段落、PDF 页码、Zotero key 和 citation-trace 状态。")
+        report_layout.addWidget(self.evidence_report_text, 1)
+
         self.result_stack = QStackedWidget()
         self.result_stack.addWidget(self.search_view)
         self.result_stack.addWidget(self.evidence_view)
+        self.result_stack.addWidget(self.evidence_report_view)
         layout.addWidget(self.result_stack, 1)
         self.message = QLabel("就绪")
         self.message.setWordWrap(True)
@@ -293,6 +340,7 @@ class MainWindow(QMainWindow):
             QProgressBar::chunk { background: #268cac; }
             QLabel#status { color: #176b91; font-weight: 600; }
             QLabel#semanticStatus { color: #526b82; }
+            QLabel#coreStatus { color: #526b82; }
         """)
         self._search_mode_changed()
         self._app_mode_changed()
@@ -307,13 +355,51 @@ class MainWindow(QMainWindow):
             self.message.setText(str(exc))
         self._refresh_semantic_status()
 
-    def _semantic_files_ready(self) -> bool:
-        directory = self.database_path.parent / "semantic"
-        return all((directory / name).is_file() for name in ("index.faiss", "chunks.sqlite", "index_metadata.json"))
-
     def _refresh_semantic_status(self) -> None:
-        self.semantic_status.setText("Semantic index · Ready" if self._semantic_files_ready()
-                                     else "Semantic index · Not built")
+        """Reflect the Core's own last-known readiness (V0.6) - the GUI does not
+        check semantic index files itself; the Core is the one source of truth."""
+        if "semantic_index_ready" not in self.core_status_payload:
+            self.semantic_status.setText("Semantic index · checking")
+        elif self.core_status_payload["semantic_index_ready"]:
+            self.semantic_status.setText("Semantic index · Ready")
+        else:
+            self.semantic_status.setText("Semantic index · Not built")
+
+    def _core_state_changed(self, state: str, status: dict) -> None:
+        """Receive a lifecycle update from CoreMonitor (runs on a background
+        thread; Qt queues this call onto the GUI thread automatically)."""
+        self.core_state = state
+        self.core_status_payload = status
+        self._refresh_semantic_status()
+        if state == UNAVAILABLE:
+            self.core_status.setText("Core · unavailable")
+            self.message.setText("Research Assistant Core is not running and could not be started. "
+                                 "Search and Evidence modes are unavailable until it is.")
+        elif state == "STARTING":
+            self.core_status.setText("Core · starting")
+        elif state == "LOADING":
+            self.core_status.setText("Core · preparing semantic model")
+            self.message.setText("Research Assistant is preparing the semantic model...")
+        elif state == "READY":
+            paper_count = status.get("paper_count")
+            self.core_status.setText(f"Core · ready ({paper_count} papers)" if paper_count is not None
+                                     else "Core · ready")
+            if self.search_service is None and self.core_manager.base_url:
+                self.search_service = CoreSearchAdapter(self.core_manager.base_url)
+            if self.message.text() == "Research Assistant is preparing the semantic model...":
+                self.message.setText("就绪")
+        elif state == "ERROR":
+            self.core_status.setText("Core · error")
+            self.message.setText(
+                f"Research Assistant Core failed to initialize: {status.get('error', 'unknown error')}")
+        self._update_search_availability()
+
+    def _update_search_availability(self) -> None:
+        """Gate the search/evidence action on Core readiness (V0.6, section 9) -
+        never on the busy-lock alone, so the reason stays visible."""
+        ready = self.core_state == "READY"
+        self.search_button.setEnabled(ready and not self.busy)
+        self.build_evidence_button.setEnabled(ready and not self.busy)
 
     def _search_mode_changed(self) -> None:
         descriptions = {
@@ -324,20 +410,24 @@ class MainWindow(QMainWindow):
         self.search_help.setText(f"{descriptions[self.search_mode.currentData()]} · 原始 PDF 文本 · 无 AI 改写")
 
     def _app_mode_changed(self) -> None:
-        evidence = self.app_mode.currentData() == "evidence"
-        self.result_stack.setCurrentIndex(1 if evidence else 0)
-        self.search_mode.setVisible(not evidence)
-        self.search_mode_label.setVisible(not evidence)
-        self.evidence_settings.setVisible(evidence)
-        self.build_evidence_button.setVisible(not evidence)
-        self.query.setPlaceholderText("Curvature-induced bandgap modulation is mainly mediated by local strain."
-                                      if evidence else "输入关键词，例如 strain bandgap In2Se3")
-        self.query_label.setText("Research question or scientific claim" if evidence else "Query")
-        self.search_button.setText("Find Evidence" if evidence else "搜索原文")
-        if evidence:
+        mode = self.app_mode.currentData()
+        stack_index = {"search": 0, "evidence": 1, "evidence_report": 2}[mode]
+        self.result_stack.setCurrentIndex(stack_index)
+        is_search = mode == "search"
+        self.search_mode.setVisible(is_search)
+        self.search_mode_label.setVisible(is_search)
+        self.evidence_settings.setVisible(mode == "evidence")
+        self.build_evidence_button.setVisible(is_search)
+        self.query.setPlaceholderText("输入关键词，例如 strain bandgap In2Se3" if is_search else
+                                      "Curvature-induced bandgap modulation is mainly mediated by local strain.")
+        self.query_label.setText("Query" if is_search else "Research question or scientific claim")
+        self.search_button.setText("搜索原文" if is_search else "Find Evidence")
+        if is_search:
+            self._search_mode_changed()
+        elif mode == "evidence":
             self.search_help.setText("Candidate Evidence · 原始 PDF 文本 · 无 AI 改写或科学判断")
         else:
-            self._search_mode_changed()
+            self.search_help.setText("Evidence Report · classified, source-traced evidence · 原始 PDF 文本")
 
     def use_query_for_evidence(self) -> None:
         self.app_mode.setCurrentIndex(self.app_mode.findData("evidence"))
@@ -364,12 +454,13 @@ class MainWindow(QMainWindow):
             return
         self.busy = True
         self.cancel_event.clear()
-        for control in (self.index_button, self.rebuild_button, self.search_button, self.refresh_button,
+        for control in (self.index_button, self.rebuild_button, self.refresh_button,
                         self.collection, self.app_mode, self.search_mode, self.year, self.journal,
                         self.max_papers, self.max_passages, self.candidate_pool,
                         self.more_button, self.view_pdf, self.copy_pack_button,
                         self.copy_ai_button, self.export_button):
             control.setEnabled(False)
+        self._update_search_availability()
         self.cancel_button.setEnabled(name == "index")
         self.progress_bar.setRange(0, 0)
         self.progress_bar.show()
@@ -377,11 +468,12 @@ class MainWindow(QMainWindow):
 
     def _idle(self) -> None:
         self.busy = False
-        for control in (self.index_button, self.rebuild_button, self.search_button, self.refresh_button,
+        for control in (self.index_button, self.rebuild_button, self.refresh_button,
                         self.collection, self.app_mode, self.search_mode, self.year, self.journal,
                         self.max_papers, self.max_passages, self.candidate_pool,
                         self.more_button):
             control.setEnabled(True)
+        self._update_search_availability()
         self.view_pdf.setEnabled(self.current_result is not None)
         self.cancel_button.setEnabled(False)
         self.progress_bar.hide()
@@ -421,8 +513,15 @@ class MainWindow(QMainWindow):
         """Search through the selected unified backend mode without blocking Qt."""
         if self.busy:
             return
-        if self.app_mode.currentData() == "evidence":
+        if self.core_state != "READY":
+            self.message.setText("Research Assistant Core is still initializing; please wait.")
+            return
+        app_mode = self.app_mode.currentData()
+        if app_mode == "evidence":
             self.start_evidence_pack()
+            return
+        if app_mode == "evidence_report":
+            self.start_evidence_report()
             return
         query = self.query.text().strip()
         try:
@@ -434,9 +533,6 @@ class MainWindow(QMainWindow):
             self.message.setText("请输入至少一个关键词。")
             return
         mode = self.search_mode.currentData()
-        if mode == "semantic" and not self._semantic_files_ready():
-            self.message.setText("Semantic index has not been built yet. Please update the semantic index.")
-            return
         try:
             year_min, year_max = self._year_range(self.year.text().strip())
         except ValueError as exc:
@@ -453,9 +549,6 @@ class MainWindow(QMainWindow):
         if not query:
             self.message.setText("请输入研究问题或科学主张。")
             return
-        if not self._semantic_files_ready():
-            self.message.setText("Semantic index has not been built yet. Please update the semantic index.")
-            return
         try:
             year_min, year_max = self._year_range(self.year.text().strip())
         except ValueError as exc:
@@ -468,6 +561,15 @@ class MainWindow(QMainWindow):
                        candidate_pool=self.candidate_pool.value())
         self.message.setText("Building evidence pack...")
         self._submit("evidence", lambda progress: self.search_service.build_evidence_pack(query, **options))
+
+    def start_evidence_report(self) -> None:
+        """Build the V0.3+ Evidence Report via the Core's unchanged /find_evidence."""
+        query = self.query.text().strip()
+        if not query:
+            self.message.setText("请输入研究问题或科学主张。")
+            return
+        self.message.setText("Building evidence report...")
+        self._submit("evidence_report", lambda progress: self.search_service.find_evidence(query, top_k=20))
 
     @staticmethod
     def _year_range(value: str) -> tuple[int | None, int | None]:
@@ -547,6 +649,19 @@ class MainWindow(QMainWindow):
             else:
                 self.evidence_summary.setText("No relevant literature found.")
                 self.message.setText("No relevant literature found. 请检查集合过滤或更新语义索引。")
+        elif name == "evidence_report":
+            self.evidence_report = value
+            self._render_evidence_report(value)
+            self.copy_report_button.setEnabled(bool(value.evidence))
+            if value.evidence:
+                classes = sorted({item.evidence_class for item in value.evidence})
+                self.evidence_report_summary.setText(
+                    f"Evidence Report · {value.returned_count} of {value.total_classified_count} items · "
+                    f"classes: {', '.join(classes)}")
+                self.message.setText("Evidence Report 已生成。")
+            else:
+                self.evidence_report_summary.setText("No relevant literature found.")
+                self.message.setText("No relevant literature found. 请检查查询或更新语义索引。")
         elif name == "render":
             title, page, png = value
             dialog = QDialog(self)
@@ -621,6 +736,58 @@ class MainWindow(QMainWindow):
             self.evidence_cards.addWidget(card)
         self.evidence_cards.addStretch()
 
+    _EVIDENCE_CLASS_ORDER = ("DIRECT", "SECONDARY", "LIMITING", "CONTEXTUAL", "UNCERTAIN")
+
+    def _render_evidence_report(self, result: FindEvidenceResult) -> None:
+        """A readable grouped text report - no card redesign (V0.6, section 13)."""
+        self.evidence_report_text.setPlainText(self._format_evidence_report(result))
+
+    @classmethod
+    def _format_evidence_report(cls, result: FindEvidenceResult) -> str:
+        groups: dict[str, list] = {name: [] for name in cls._EVIDENCE_CLASS_ORDER}
+        for item in result.evidence:
+            groups.setdefault(item.evidence_class, []).append(item)
+        lines = [
+            f"Evidence Report for: {result.query}",
+            f"{result.returned_count} of {result.total_classified_count} classified items shown "
+            f"({result.retrieval_summary.candidate_count} candidates, "
+            f"{result.retrieval_summary.duplicate_papers_merged} paper duplicates merged, "
+            f"{result.retrieval_summary.duplicate_passages_removed} duplicate passages removed)",
+            "",
+        ]
+        for evidence_class in cls._EVIDENCE_CLASS_ORDER:
+            items = groups.get(evidence_class) or []
+            if not items:
+                continue
+            lines.append(f"=== {evidence_class} ({len(items)}) ===")
+            lines.append("")
+            for item in items:
+                paper = item.paper
+                lines.append(plain_title(paper.title))
+                lines.append(f"{paper.journal or 'journal not provided'} · {paper.year or 'year not provided'} "
+                             f"· DOI: {paper.doi or 'not provided'}")
+                lines.append(f"Zotero: {paper.zotero_item_key} · PDF page {item.passage.pdf_page}")
+                lines.append(f"Rationale: {item.rationale}")
+                for trace in item.citation_traces:
+                    resolved = f" -> {plain_title(trace.resolved_paper.title)}" if trace.resolved_paper else ""
+                    lines.append(f"Citation trace {trace.citation_marker}: "
+                                 f"{trace.resolution_status}{resolved}")
+                lines.append("")
+                lines.append(item.passage.text)
+                lines.append("")
+                lines.append("-" * 60)
+                lines.append("")
+        if not any(groups.values()):
+            lines.append("No relevant literature found.")
+        return "\n".join(lines)
+
+    def copy_evidence_report(self) -> None:
+        if self.evidence_report is None:
+            self.message.setText("请先生成 Evidence Report。")
+            return
+        QApplication.clipboard().setText(self.evidence_report_text.toPlainText())
+        self.message.setText("已复制 Evidence Report。")
+
     def _selected_evidence_pack(self) -> EvidencePack | None:
         if not self.evidence_pack:
             self.message.setText("请先生成 Evidence Pack。")
@@ -679,6 +846,9 @@ class MainWindow(QMainWindow):
             self.message.setText(f"Evidence pack generation failed: {message}")
             for control in (self.copy_pack_button, self.copy_ai_button, self.export_button):
                 control.setEnabled(bool(self.evidence_pack and self.evidence_pack.papers))
+        elif name == "evidence_report":
+            self.message.setText(f"Evidence report generation failed: {message}")
+            self.copy_report_button.setEnabled(bool(self.evidence_report and self.evidence_report.evidence))
         elif name == "search" and "Semantic index" in message:
             self.message.setText("Semantic index has not been built yet. Please update the semantic index.")
             self._refresh_semantic_status()
@@ -792,14 +962,23 @@ class MainWindow(QMainWindow):
                 self.message.setText("无法启动默认 PDF 阅读器。可使用「查看 PDF 原页」。")
 
     def closeEvent(self, event) -> None:
-        """Cancel long work before shutting down; never terminate a live Qt worker."""
+        """Cancel long work before shutting down; never terminate a live Qt worker.
+
+        Never stops the Research Assistant Core Service: Claude/Codex/other
+        MCP clients may still be using it, so Core lifetime is independent
+        of GUI lifetime (V0.6 brief, section 7) - only this GUI's own
+        background monitor thread is stopped, and only to avoid emitting
+        Qt signals to a window that is about to be destroyed.
+        """
         if self.busy:
             self.closing = True
             self.cancel_event.set()
             self.message.setText("正在结束当前任务并安全关闭…")
             event.ignore()
             return
+        self.core_monitor.stop()
         self.thread.quit()
         self.thread.wait()
-        self.search_service.close()
+        if self.search_service is not None:
+            self.search_service.close()
         event.accept()

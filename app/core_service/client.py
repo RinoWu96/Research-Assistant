@@ -1,12 +1,14 @@
 """Thin HTTP client for the Research Assistant Core Service.
 
 This is the one seam other processes use to reach the Core - the MCP proxy
-today (`app.external_api.mcp_adapter`), and, later, the desktop GUI and any
-local-LLM integration (see section 8 of the V0.5 brief: the API is shaped
-so that migration needs no redesign here). It never imports the Evidence
-Engine, the semantic index, or the embedder: if no running, healthy Core
-can be found, it raises `ResearchAssistantUnavailableError` and does
-nothing else - it never falls back to doing the work itself.
+(`app.external_api.mcp_adapter`) and, since V0.6, the desktop GUI (via
+`app.ui.core_search_adapter.CoreSearchAdapter`) and any future local-LLM
+integration. It never imports the Evidence Engine, the semantic index, or
+the embedder: if no running, healthy Core can be found, it raises
+`ResearchAssistantUnavailableError` and does nothing else - it never falls
+back to doing the work itself. There is exactly one HTTP client
+implementation; nothing else in this codebase makes its own HTTP calls to
+the Core.
 """
 
 import httpx
@@ -15,6 +17,11 @@ from app.core_service import discovery
 from app.external_api.mcp_schemas import FindEvidenceResult
 
 DEFAULT_TIMEOUT_SECONDS = 120.0
+# /health and /status are designed to always be fast (V0.5, section 11) - a
+# short, fixed timeout keeps a caller polling Core lifecycle (the desktop
+# GUI) from ever hanging on an unresponsive process, regardless of the
+# longer timeout appropriate for a real search/evidence request.
+STATUS_TIMEOUT_SECONDS = 3.0
 
 
 class CoreClientError(RuntimeError):
@@ -45,11 +52,21 @@ class EvidenceEngineError(CoreClientError):
     """The Core's Evidence Engine raised an unexpected error."""
 
 
+class InvalidSearchRequestError(CoreClientError):
+    """The Core rejected the /search or /evidence_pack query, mode, or options."""
+
+
+class SearchEngineError(CoreClientError):
+    """The Core's retrieval backend raised an unexpected error."""
+
+
 _ERROR_TYPES: dict[str, type[CoreClientError]] = {
     "InvalidQuery": InvalidQueryError,
     "InvalidEvidenceType": InvalidEvidenceTypeError,
     "DatabaseUnavailable": DatabaseUnavailableError,
     "EvidenceEngineError": EvidenceEngineError,
+    "InvalidSearchRequest": InvalidSearchRequestError,
+    "SearchEngineError": SearchEngineError,
     "ResearchAssistantLoading": ResearchAssistantLoadingError,
     "ResearchAssistantUnavailable": ResearchAssistantUnavailableError,
 }
@@ -73,6 +90,36 @@ class CoreClient:
                 "'.venv\\Scripts\\python.exe -m app.core_service' and try again.")
         return base_url
 
+    def _raise_for_error_response(self, base_url: str, response: httpx.Response) -> None:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        error_name = payload.get("error", "EvidenceEngineError")
+        message = payload.get("message") or f"Core at {base_url} returned HTTP {response.status_code}."
+        raise _ERROR_TYPES.get(error_name, EvidenceEngineError)(message)
+
+    def health(self) -> bool:
+        """True only if the Core answered `/health` itself; never raises."""
+        try:
+            base_url = self._base_url()
+            response = httpx.get(f"{base_url}/health", timeout=STATUS_TIMEOUT_SECONDS)
+            return response.status_code == 200 and response.json().get("ok") is True
+        except Exception:
+            return False
+
+    def status(self) -> dict:
+        """Return the Core's `/status` payload (state, readiness flags, paper_count)."""
+        base_url = self._base_url()
+        try:
+            response = httpx.get(f"{base_url}/status", timeout=STATUS_TIMEOUT_SECONDS)
+        except httpx.HTTPError as exc:
+            raise ResearchAssistantUnavailableError(
+                f"Could not reach the Research Assistant Core at {base_url}: {exc}") from exc
+        if response.status_code != 200:
+            self._raise_for_error_response(base_url, response)
+        return response.json()
+
     def find_evidence(self, query: str, top_k: int = 10,
                        evidence_types: list[str] | None = None) -> FindEvidenceResult:
         base_url = self._base_url()
@@ -84,14 +131,46 @@ class CoreClient:
         except httpx.HTTPError as exc:
             raise ResearchAssistantUnavailableError(
                 f"Could not reach the Research Assistant Core at {base_url}: {exc}") from exc
+        if response.status_code != 200:
+            self._raise_for_error_response(base_url, response)
+        return FindEvidenceResult.model_validate(response.json())
 
-        if response.status_code == 200:
-            return FindEvidenceResult.model_validate(response.json())
+    def search(self, query: str, mode: str = "hybrid", top_k: int = 20, **options) -> list[dict]:
+        """Run the existing Keyword/Semantic/Hybrid retrieval backend via the Core.
 
+        `options` (collection/year_min/year_max/journal/paper_id/result_level/
+        max_chunks_per_paper/diversify_results) pass straight through to the
+        Core's `/search` endpoint. Returns plain dicts shaped like
+        `dataclasses.asdict(HybridResult)`; the caller (e.g.
+        `app.ui.core_search_adapter.CoreSearchAdapter`) is responsible for
+        converting them back into `HybridResult` if it needs the dataclass.
+        """
+        base_url = self._base_url()
         try:
-            payload = response.json()
-        except ValueError:
-            payload = {}
-        error_name = payload.get("error", "EvidenceEngineError")
-        message = payload.get("message") or f"Core returned HTTP {response.status_code}."
-        raise _ERROR_TYPES.get(error_name, EvidenceEngineError)(message)
+            response = httpx.post(f"{base_url}/search",
+                                  json={"query": query, "mode": mode, "top_k": top_k, **options},
+                                  timeout=self.timeout)
+        except httpx.HTTPError as exc:
+            raise ResearchAssistantUnavailableError(
+                f"Could not reach the Research Assistant Core at {base_url}: {exc}") from exc
+        if response.status_code != 200:
+            self._raise_for_error_response(base_url, response)
+        return response.json()["results"]
+
+    def build_evidence_pack(self, query: str, **options) -> dict:
+        """Run the existing V0.2 evidence pack builder via the Core.
+
+        Returns the pack as a plain dict (`EvidencePack.to_dict()`'s shape);
+        the caller converts it back into `EvidencePack`/`PaperEvidence`/
+        `EvidencePassage` if it needs the dataclasses.
+        """
+        base_url = self._base_url()
+        try:
+            response = httpx.post(f"{base_url}/evidence_pack", json={"query": query, **options},
+                                  timeout=self.timeout)
+        except httpx.HTTPError as exc:
+            raise ResearchAssistantUnavailableError(
+                f"Could not reach the Research Assistant Core at {base_url}: {exc}") from exc
+        if response.status_code != 200:
+            self._raise_for_error_response(base_url, response)
+        return response.json()["pack"]

@@ -1,11 +1,12 @@
-"""Tests for app/core_service/http_api.py: the Core Service's three HTTP
-endpoints (V0.5 brief, sections 2-3, 5, 11-12).
+"""Tests for app/core_service/http_api.py: the Core Service's HTTP endpoints
+(V0.5 brief, sections 2-3, 5, 11-12; V0.6 brief, section 5 for /search and
+/evidence_pack).
 
 A fake `ResourceManager` (matching the small surface `http_api` actually
 uses - `.status()` and `.search_service`) drives each lifecycle state
 directly, so these tests do not depend on real database/index/model
-initialization; `tests/test_mcp_integration.py` covers the real pipeline
-end to end.
+initialization; `tests/test_mcp_integration.py` and
+`tests/test_gui_core_integration.py` cover the real pipelines end to end.
 """
 
 from contextlib import contextmanager
@@ -16,7 +17,7 @@ from unittest.mock import patch
 
 import httpx
 
-from app.core_service import evidence_gateway
+from app.core_service import evidence_gateway, search_gateway
 from app.core_service.http_api import CoreHTTPServer
 from app.core_service.resource_manager import ResourceStatus
 from app.core_service.state import CoreState
@@ -163,6 +164,82 @@ class FindEvidenceEndpointTests(unittest.TestCase):
         with _running_server(_FakeResourceManager(READY_STATUS)) as base_url:
             response = httpx.get(f"{base_url}/nope", timeout=5)
         self.assertEqual(response.status_code, 404)
+
+
+class SearchEndpointTests(unittest.TestCase):
+    """V0.6: the desktop GUI's Keyword/Semantic/Hybrid modes, via /search."""
+
+    def test_returns_503_while_loading_without_calling_the_gateway(self):
+        with patch.object(search_gateway, "search") as fake_search:
+            with _running_server(_FakeResourceManager(LOADING_STATUS)) as base_url:
+                response = httpx.post(f"{base_url}/search", json={"query": "claim"}, timeout=5)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"], "ResearchAssistantLoading")
+        fake_search.assert_not_called()
+
+    def test_ready_state_calls_the_gateway_with_the_shared_search_service_and_options(self):
+        search_service = object()
+        manager = _FakeResourceManager(READY_STATUS, search_service=search_service)
+        with patch.object(search_gateway, "search", return_value=[{"paper_id": 1}]) as fake_search:
+            with _running_server(manager) as base_url:
+                response = httpx.post(
+                    f"{base_url}/search",
+                    json={"query": "claim", "mode": "keyword", "top_k": 5, "collection": "C1",
+                          "year_min": 2020, "max_chunks_per_paper": 40},
+                    timeout=5)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"results": [{"paper_id": 1}]})
+        fake_search.assert_called_once_with(
+            search_service, query="claim", mode="keyword", top_k=5, collection="C1",
+            year_min=2020, max_chunks_per_paper=40)
+
+    def test_invalid_search_request_maps_to_400(self):
+        with patch.object(search_gateway, "search",
+                          side_effect=search_gateway.InvalidSearchRequestError("bad mode")):
+            with _running_server(_FakeResourceManager(READY_STATUS)) as base_url:
+                response = httpx.post(f"{base_url}/search", json={"query": "claim", "mode": "bogus"},
+                                      timeout=5)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "InvalidSearchRequest")
+
+    def test_unexpected_engine_error_maps_to_500(self):
+        with patch.object(search_gateway, "search", side_effect=search_gateway.SearchEngineError("boom")):
+            with _running_server(_FakeResourceManager(READY_STATUS)) as base_url:
+                response = httpx.post(f"{base_url}/search", json={"query": "claim"}, timeout=5)
+        self.assertEqual(response.status_code, 500)
+
+
+class EvidencePackEndpointTests(unittest.TestCase):
+    """V0.6: the desktop GUI's Evidence Pack mode, via /evidence_pack."""
+
+    def test_returns_503_while_loading_without_calling_the_gateway(self):
+        with patch.object(search_gateway, "build_evidence_pack") as fake_build:
+            with _running_server(_FakeResourceManager(LOADING_STATUS)) as base_url:
+                response = httpx.post(f"{base_url}/evidence_pack", json={"query": "claim"}, timeout=5)
+        self.assertEqual(response.status_code, 503)
+        fake_build.assert_not_called()
+
+    def test_ready_state_calls_the_gateway_with_the_shared_search_service_and_options(self):
+        search_service = object()
+        manager = _FakeResourceManager(READY_STATUS, search_service=search_service)
+        pack_dict = {"query": "claim", "papers": [], "candidate_count": 0, "duplicate_passages_removed": 0}
+        with patch.object(search_gateway, "build_evidence_pack", return_value=pack_dict) as fake_build:
+            with _running_server(manager) as base_url:
+                response = httpx.post(
+                    f"{base_url}/evidence_pack",
+                    json={"query": "claim", "max_papers": 6, "candidate_pool": 60}, timeout=5)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"pack": pack_dict})
+        fake_build.assert_called_once_with(
+            search_service, query="claim", database_path=manager.database_path,
+            max_papers=6, candidate_pool=60)
+
+    def test_invalid_search_request_maps_to_400(self):
+        with patch.object(search_gateway, "build_evidence_pack",
+                          side_effect=search_gateway.InvalidSearchRequestError("bad")):
+            with _running_server(_FakeResourceManager(READY_STATUS)) as base_url:
+                response = httpx.post(f"{base_url}/evidence_pack", json={"query": ""}, timeout=5)
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":

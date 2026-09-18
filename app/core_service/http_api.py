@@ -1,21 +1,28 @@
 """Minimal localhost HTTP API for the Research Assistant Core Service.
 
-Three endpoints only (see docs/v0.5-core-service.md):
+Endpoints (see docs/v0.5-core-service.md, docs/v0.6-gui-core-migration.md):
   GET  /health         - always fast; never touches the database, index or model.
-  GET  /status          - lifecycle state and readiness detail.
-  POST /find_evidence   - the existing Evidence Engine, via app.core_service.evidence_gateway.
+  GET  /status         - lifecycle state and readiness detail.
+  POST /find_evidence  - the existing Evidence Engine, via app.core_service.evidence_gateway.
+  POST /search          - the existing unified Keyword/Semantic/Hybrid retrieval
+                           backend, via app.core_service.search_gateway. Added in
+                           V0.6 for the desktop GUI; MCP does not use it.
+  POST /evidence_pack    - the existing V0.2 evidence pack builder, via
+                           app.core_service.search_gateway. Added in V0.6 for the
+                           desktop GUI's Evidence Pack mode; MCP does not use it.
 
 This module owns HTTP framing only - request parsing, status-code mapping,
-and JSON encoding. All evidence-report shaping lives in
-`app.core_service.evidence_gateway`; this module never reimplements it.
-Uses only the standard library so the Core Service adds no new dependency.
+and JSON encoding. All retrieval/evidence shaping lives in
+`app.core_service.evidence_gateway` and `app.core_service.search_gateway`;
+this module never reimplements either. Uses only the standard library so
+the Core Service adds no new dependency.
 """
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 
-from app.core_service import evidence_gateway
+from app.core_service import evidence_gateway, search_gateway
 from app.core_service.resource_manager import ResourceManager
 from app.core_service.state import CoreState
 
@@ -73,30 +80,46 @@ class CoreRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path == "/find_evidence":
             self._handle_find_evidence()
+        elif self.path == "/search":
+            self._handle_search()
+        elif self.path == "/evidence_pack":
+            self._handle_evidence_pack()
         else:
             self._send_json(404, {"error": "NotFound", "message": f"Unknown path {self.path!r}."})
 
-    def _handle_find_evidence(self) -> None:
-        resource_manager = self.server.resource_manager
+    def _read_json_body(self) -> dict | None:
+        """Return the parsed request body, or None after already sending a 400."""
         length = int(self.headers.get("Content-Length", "0") or "0")
         raw_body = self.rfile.read(length) if length else b"{}"
         try:
-            body = json.loads(raw_body or b"{}")
+            return json.loads(raw_body or b"{}")
         except json.JSONDecodeError as exc:
             self._send_json(400, {"error": "InvalidRequest", "message": f"Malformed JSON body: {exc}"})
-            return
+            return None
 
+    def _not_ready_response(self, resource_manager: ResourceManager) -> dict | None:
+        """Return a 503 body if the Core is not READY, after already sending it; else None."""
         status = resource_manager.status()
-        if status.state != CoreState.READY:
-            loading = status.state == CoreState.LOADING
-            self._send_json(503, {
-                "error": "ResearchAssistantLoading" if loading else "ResearchAssistantUnavailable",
-                "state": status.state.value,
-                "message": (
-                    "The Research Assistant Core is still initializing (database, semantic "
-                    "index and embedding model); retry shortly." if loading else
-                    f"The Research Assistant Core failed to initialize: {status.error}"),
-            })
+        if status.state == CoreState.READY:
+            return None
+        loading = status.state == CoreState.LOADING
+        payload = {
+            "error": "ResearchAssistantLoading" if loading else "ResearchAssistantUnavailable",
+            "state": status.state.value,
+            "message": (
+                "The Research Assistant Core is still initializing (database, semantic "
+                "index and embedding model); retry shortly." if loading else
+                f"The Research Assistant Core failed to initialize: {status.error}"),
+        }
+        self._send_json(503, payload)
+        return payload
+
+    def _handle_find_evidence(self) -> None:
+        resource_manager = self.server.resource_manager
+        body = self._read_json_body()
+        if body is None:
+            return
+        if self._not_ready_response(resource_manager) is not None:
             return
 
         try:
@@ -117,3 +140,49 @@ class CoreRequestHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": "EvidenceEngineError", "message": str(exc)})
         else:
             self._send_json(200, result.model_dump())
+
+    _SEARCH_OPTION_KEYS = ("collection", "year_min", "year_max", "journal", "paper_id",
+                          "result_level", "max_chunks_per_paper", "diversify_results")
+
+    def _handle_search(self) -> None:
+        resource_manager = self.server.resource_manager
+        body = self._read_json_body()
+        if body is None:
+            return
+        if self._not_ready_response(resource_manager) is not None:
+            return
+
+        options = {key: body[key] for key in self._SEARCH_OPTION_KEYS if key in body}
+        try:
+            results = search_gateway.search(
+                resource_manager.search_service, query=body.get("query", ""),
+                mode=body.get("mode", "hybrid"), top_k=body.get("top_k", 20), **options)
+        except search_gateway.InvalidSearchRequestError as exc:
+            self._send_json(400, {"error": "InvalidSearchRequest", "message": str(exc)})
+        except search_gateway.SearchEngineError as exc:
+            self._send_json(500, {"error": "SearchEngineError", "message": str(exc)})
+        else:
+            self._send_json(200, {"results": results})
+
+    _EVIDENCE_PACK_OPTION_KEYS = ("collection", "year_min", "year_max", "journal",
+                                 "max_papers", "max_passages_per_paper", "candidate_pool")
+
+    def _handle_evidence_pack(self) -> None:
+        resource_manager = self.server.resource_manager
+        body = self._read_json_body()
+        if body is None:
+            return
+        if self._not_ready_response(resource_manager) is not None:
+            return
+
+        options = {key: body[key] for key in self._EVIDENCE_PACK_OPTION_KEYS if key in body}
+        try:
+            pack = search_gateway.build_evidence_pack(
+                resource_manager.search_service, query=body.get("query", ""),
+                database_path=resource_manager.database_path, **options)
+        except search_gateway.InvalidSearchRequestError as exc:
+            self._send_json(400, {"error": "InvalidSearchRequest", "message": str(exc)})
+        except search_gateway.SearchEngineError as exc:
+            self._send_json(500, {"error": "SearchEngineError", "message": str(exc)})
+        else:
+            self._send_json(200, {"pack": pack})
