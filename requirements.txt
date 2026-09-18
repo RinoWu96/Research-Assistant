@@ -5,3 +5,5 @@ PySide6>=6.7,<7
 # V0.2 semantic proof of concept (CPU only; no service process).
 sentence-transformers>=5,<7
 faiss-cpu>=1.11,<2
+# V0.4-A: read-only MCP server exposing the existing Evidence Engine (app/external_api).
+mcp>=1.2,<2

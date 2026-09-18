@@ -169,7 +169,7 @@ app/
     search_service.py   同页关键词查询、排序和结果
     text.py             文本规范化和原文片段定位
   ui/                   PySide6 窗口、单个后台工作线程
-  external_api/         未来扩展边界；V0.1 无实现、无服务
+  external_api/         V0.4-A：只读 MCP 服务，将 Evidence Engine 暴露为 find_evidence
   evidence/             Candidate Evidence 聚合、去重及 Markdown/JSON 导出
   cli.py                无 GUI 的后端命令入口
 data/literature.db      应用自有索引，不是 Zotero 数据库
@@ -179,6 +179,17 @@ main.py                 桌面启动与依赖组装
 
 详见 [架构说明](docs/architecture.md) 和 [验收记录](docs/verification.md)。
 日志位于 `data/research-assistant.log`，本地轮转，未上传。
+
+## V0.4-A：MCP 外部工具（find_evidence）
+
+在不改动检索、分类、引用溯源或排序逻辑的前提下，将已验证的 V0.3.2 Evidence Engine
+暴露为一个只读 MCP 工具 `find_evidence`，供 Claude Code / Codex 等外部 agent 调用：
+
+```powershell
+.\.venv\Scripts\python.exe -m app.external_api.mcp_server
+```
+
+详见 [V0.4-A 说明](docs/v0.4-mcp.md)（架构、精确 schema、错误处理、Claude Code 连接配置）。
 
 ## 限制及错误处理
 
