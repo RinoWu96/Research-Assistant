@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+data/*.db
+data/*.db-*
+*.log
+*.log.*
+docs/screenshots/
+data/vectors/
+data/semantic/
