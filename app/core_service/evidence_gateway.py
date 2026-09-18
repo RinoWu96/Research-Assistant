@@ -44,6 +44,7 @@ from app.external_api.mcp_schemas import (
 )
 from app.search.database import DatabaseError
 from app.search.hybrid_search import UnifiedSearchService
+from app.core_service.report_cache import ReportCache
 
 MIN_TOP_K = 1
 MAX_TOP_K = 200
@@ -116,6 +117,11 @@ def _to_evidence_item(item: ClassifiedEvidence) -> EvidenceItem:
         evidence_class=item.evidence_class.value,
         classification_confidence=item.evidence_confidence,
         rationale=item.rationale,
+        claim_match=item.claim_match,
+        material_match=item.material_match,
+        stimulus_match=item.stimulus_match,
+        phase_match=item.phase_match,
+        source_type=item.classification_source_type,
         retrieval_score=item.retrieval_score,
         paper=PaperInfo(
             canonical_id=identity.canonical_id,
@@ -139,7 +145,8 @@ def _to_evidence_item(item: ClassifiedEvidence) -> EvidenceItem:
 
 def find_evidence(search_service: UnifiedSearchService, query: str, top_k: int = 10,
                    evidence_types: list[str] | None = None, *,
-                   database_path: Path = DATABASE_PATH) -> FindEvidenceResult:
+                   database_path: Path = DATABASE_PATH,
+                   report_cache: ReportCache | None = None) -> FindEvidenceResult:
     """Run the existing V0.3.2 Evidence Engine and shape its report for an external agent.
 
     `database_path` must be the same database `search_service` was built
@@ -180,8 +187,10 @@ def find_evidence(search_service: UnifiedSearchService, query: str, top_k: int =
     if wanted_classes is not None:
         classified = [item for item in classified if item.evidence_class.value in wanted_classes]
     limited = classified[:top_k]
+    report_id = report_cache.store(report) if report_cache is not None else ""
 
     return FindEvidenceResult(
+        report_id=report_id,
         query=report.query,
         evidence=[_to_evidence_item(item) for item in limited],
         returned_count=len(limited),

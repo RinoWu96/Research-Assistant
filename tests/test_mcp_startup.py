@@ -39,7 +39,7 @@ class RealStdioSubprocessTests(unittest.TestCase):
         params = StdioServerParameters(
             command=str(PYTHON), args=["-m", "app.external_api.mcp_server"], cwd=str(PROJECT_ROOT))
         tool_names = anyio.run(_handshake_and_list_tools, params)
-        self.assertEqual(tool_names, ["find_evidence"])
+        self.assertEqual(tool_names, ["find_evidence", "find_evidence_for_claim", "get_source", "verify_citation"])
 
     def test_full_handshake_via_direct_script_path_from_an_unrelated_cwd(self):
         """No `-m`, and cwd is neither the project root nor a parent of it -
@@ -48,7 +48,7 @@ class RealStdioSubprocessTests(unittest.TestCase):
             params = StdioServerParameters(
                 command=str(PYTHON), args=[str(MCP_SERVER_FILE)], cwd=elsewhere)
             tool_names = anyio.run(_handshake_and_list_tools, params)
-        self.assertEqual(tool_names, ["find_evidence"])
+        self.assertEqual(tool_names, ["find_evidence", "find_evidence_for_claim", "get_source", "verify_citation"])
 
     def test_module_invocation_with_pythonpath_works_from_an_unrelated_cwd(self):
         """The documented `.mcp.json` fix: no `cwd` field exists in the installed
@@ -59,7 +59,7 @@ class RealStdioSubprocessTests(unittest.TestCase):
                 command=str(PYTHON), args=["-m", "app.external_api.mcp_server"],
                 cwd=elsewhere, env={"PYTHONPATH": str(PROJECT_ROOT)})
             tool_names = anyio.run(_handshake_and_list_tools, params)
-        self.assertEqual(tool_names, ["find_evidence"])
+        self.assertEqual(tool_names, ["find_evidence", "find_evidence_for_claim", "get_source", "verify_citation"])
 
 
 class ModuleInvocationWithoutProjectRootFailsClearlyTests(unittest.TestCase):

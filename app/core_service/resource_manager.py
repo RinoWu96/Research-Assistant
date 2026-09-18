@@ -20,11 +20,13 @@ each initialized once per Core process and then reused by every
 from collections.abc import Callable
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
 import threading
 
 from app.config import DATABASE_PATH
 from app.core_service.state import CoreState
+from app.core_service.report_cache import ReportCache
 from app.search.database import Database
 from app.search.hybrid_search import UnifiedSearchService
 
@@ -62,6 +64,10 @@ class ResourceManager:
         self._paper_count: int | None = None
         self._error: str | None = None
         self._search_service: UnifiedSearchService | None = None
+        self.report_cache = ReportCache(
+            ttl_seconds=float(os.environ.get("RESEARCH_ASSISTANT_REPORT_TTL_SECONDS", "3600")),
+            max_reports=int(os.environ.get("RESEARCH_ASSISTANT_REPORT_MAX_COUNT", "100")),
+        )
 
     @property
     def state(self) -> CoreState:

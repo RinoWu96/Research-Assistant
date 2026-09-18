@@ -12,7 +12,9 @@ does not restart the Core, so it never reloads the embedding model.
 """
 
 from app.core_service import client as core_client
-from app.external_api.mcp_schemas import FindEvidenceResult
+from app.external_api.mcp_schemas import (
+    CitationVerificationResult, ClaimEvidenceResult, FindEvidenceResult, SourceResult,
+)
 
 
 class EvidenceMCPError(RuntimeError):
@@ -47,6 +49,30 @@ class ResearchAssistantLoadingError(EvidenceMCPError):
     """The Research Assistant Core Service is running but still initializing."""
 
 
+class ReportNotFoundError(EvidenceMCPError):
+    pass
+
+
+class ReportExpiredError(EvidenceMCPError):
+    pass
+
+
+class EvidenceNotFoundError(EvidenceMCPError):
+    pass
+
+
+class SourceContextUnavailableError(EvidenceMCPError):
+    pass
+
+
+class InvalidClaimError(EvidenceMCPError):
+    pass
+
+
+class CitationVerificationError(EvidenceMCPError):
+    pass
+
+
 _CLIENT_ERROR_MAP: dict[type[core_client.CoreClientError], type[EvidenceMCPError]] = {
     core_client.InvalidQueryError: InvalidQueryError,
     core_client.InvalidEvidenceTypeError: InvalidEvidenceTypeError,
@@ -54,6 +80,12 @@ _CLIENT_ERROR_MAP: dict[type[core_client.CoreClientError], type[EvidenceMCPError
     core_client.EvidenceEngineError: EvidenceEngineError,
     core_client.ResearchAssistantLoadingError: ResearchAssistantLoadingError,
     core_client.ResearchAssistantUnavailableError: ResearchAssistantUnavailableError,
+    core_client.ReportNotFoundError: ReportNotFoundError,
+    core_client.ReportExpiredError: ReportExpiredError,
+    core_client.EvidenceNotFoundError: EvidenceNotFoundError,
+    core_client.SourceContextUnavailableError: SourceContextUnavailableError,
+    core_client.InvalidClaimError: InvalidClaimError,
+    core_client.CitationVerificationError: CitationVerificationError,
 }
 
 _client = core_client.CoreClient()
@@ -70,5 +102,28 @@ def find_evidence(query: str, top_k: int = 10, evidence_types: list[str] | None 
     """
     try:
         return _client.find_evidence(query, top_k=top_k, evidence_types=evidence_types)
+    except tuple(_CLIENT_ERROR_MAP) as exc:
+        raise _CLIENT_ERROR_MAP[type(exc)](str(exc)) from exc
+
+
+def get_source(report_id: str, evidence_id: str, context_pages: int = 1) -> SourceResult:
+    try:
+        return _client.get_source(report_id, evidence_id, context_pages=context_pages)
+    except tuple(_CLIENT_ERROR_MAP) as exc:
+        raise _CLIENT_ERROR_MAP[type(exc)](str(exc)) from exc
+
+
+def find_evidence_for_claim(claim: str, top_k: int = 10,
+                            evidence_types: list[str] | None = None) -> ClaimEvidenceResult:
+    try:
+        return _client.find_evidence_for_claim(claim, top_k=top_k, evidence_types=evidence_types)
+    except tuple(_CLIENT_ERROR_MAP) as exc:
+        raise _CLIENT_ERROR_MAP[type(exc)](str(exc)) from exc
+
+
+def verify_citation(claim: str, report_id: str,
+                    evidence_id: str) -> CitationVerificationResult:
+    try:
+        return _client.verify_citation(claim, report_id, evidence_id)
     except tuple(_CLIENT_ERROR_MAP) as exc:
         raise _CLIENT_ERROR_MAP[type(exc)](str(exc)) from exc

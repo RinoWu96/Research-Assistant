@@ -1,5 +1,5 @@
-"""MCP server exposing the Research Assistant Core Service as one external
-tool, `find_evidence`, for MCP-compatible agents (Claude Code, Codex).
+"""MCP server exposing the Research Assistant Core Service's read-only
+scientific evidence tools to MCP-compatible agents (Claude Code, Codex).
 Runnable independently of the PySide6 desktop GUI.
 
 V0.5: this process is a lightweight proxy - it never constructs or imports
@@ -36,7 +36,10 @@ from mcp.server.fastmcp import FastMCP
 
 from app.core_service import discovery
 from app.external_api import mcp_adapter
-from app.external_api.mcp_schemas import EvidenceTypeName, FindEvidenceResult
+from app.external_api.mcp_schemas import (
+    CitationVerificationResult, ClaimEvidenceResult, EvidenceTypeName,
+    FindEvidenceResult, SourceResult,
+)
 
 mcp = FastMCP(
     name="research-assistant-evidence",
@@ -65,6 +68,41 @@ def find_evidence(
     Read-only against the local literature index; never modifies Zotero or any PDF.
     """
     return mcp_adapter.find_evidence(query, top_k=top_k, evidence_types=evidence_types)
+
+
+@mcp.tool()
+def find_evidence_for_claim(
+    claim: str, top_k: int = 10,
+    evidence_types: list[EvidenceTypeName] | None = None,
+) -> ClaimEvidenceResult:
+    """Search local literature for evidence supporting, limiting, or contextualizing a scientific claim.
+
+    Uses the claim exactly as supplied and returns claim-oriented evidence groups plus an opaque
+    report_id. Never fabricate report or evidence IDs; use only handles returned by this server.
+    """
+    return mcp_adapter.find_evidence_for_claim(
+        claim, top_k=top_k, evidence_types=evidence_types)
+
+
+@mcp.tool()
+def get_source(report_id: str, evidence_id: str, context_pages: int = 1) -> SourceResult:
+    """Retrieve original surrounding source context for a previously returned evidence item.
+
+    Use only report_id and evidence_id values returned by a Research Assistant evidence tool.
+    This is a provenance lookup, not a literature search, and accepts no filesystem path.
+    """
+    return mcp_adapter.get_source(report_id, evidence_id, context_pages=context_pages)
+
+
+@mcp.tool()
+def verify_citation(claim: str, report_id: str,
+                    evidence_id: str) -> CitationVerificationResult:
+    """Check whether a previously returned evidence item supports a specific scientific claim.
+
+    Use real report/evidence IDs returned by this server; do not fabricate IDs or paper metadata.
+    The conservative result describes local evidence support, not scientific truth.
+    """
+    return mcp_adapter.verify_citation(claim, report_id, evidence_id)
 
 
 def _startup_environment_warnings() -> list[str]:

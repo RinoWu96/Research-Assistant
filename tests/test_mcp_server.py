@@ -23,10 +23,11 @@ def _fake_result() -> FindEvidenceResult:
 
 
 class McpServerStartupTests(unittest.IsolatedAsyncioTestCase):
-    async def test_server_starts_and_exposes_exactly_one_read_only_tool(self):
+    async def test_server_exposes_the_four_read_only_scientific_tools(self):
         async with create_connected_server_and_client_session(mcp_server.mcp) as session:
             tools = await session.list_tools()
-        self.assertEqual([t.name for t in tools.tools], ["find_evidence"])
+        self.assertEqual([t.name for t in tools.tools], [
+            "find_evidence", "find_evidence_for_claim", "get_source", "verify_citation"])
 
     async def test_find_evidence_delegates_to_adapter_rather_than_reimplementing(self):
         with patch("app.external_api.mcp_server.mcp_adapter.find_evidence",

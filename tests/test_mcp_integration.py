@@ -106,6 +106,18 @@ class McpProxyRealCoreIntegrationTests(unittest.TestCase):
         find_evidence(CLAIM, top_k=1)
         self.assertIs(self.server.resource_manager.search_service, search_service_before)
 
+    def test_v07_claim_source_and_verification_round_trip_through_core_http(self):
+        search_service_before = self.server.resource_manager.search_service
+        result = mcp_adapter.find_evidence_for_claim(CLAIM, top_k=10)
+        self.assertRegex(result.report_id, r"^evr_")
+        item = result.direct_support[0]
+        source = mcp_adapter.get_source(result.report_id, item.evidence_id, context_pages=1)
+        self.assertEqual(source.source.evidence_passage, item.passage.text)
+        self.assertIn(item.passage.pdf_page, [page.pdf_page for page in source.source.pages])
+        verification = mcp_adapter.verify_citation(CLAIM, result.report_id, item.evidence_id)
+        self.assertEqual(verification.status, "SUPPORTED")
+        self.assertIs(self.server.resource_manager.search_service, search_service_before)
+
 
 if __name__ == "__main__":
     unittest.main()

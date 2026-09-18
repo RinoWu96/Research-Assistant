@@ -19,6 +19,31 @@ class DatabaseError(RuntimeError):
     """A local index failure suitable for presentation to the user."""
 
 
+class ReadOnlyDatabase:
+    """Open an existing application index without schema or journal writes."""
+
+    def __init__(self, path: Path = DATABASE_PATH) -> None:
+        self.path = Path(path).resolve()
+        if self.path.name.lower().startswith("zotero.sqlite"):
+            raise DatabaseError("The search index must never be Zotero's database.")
+        try:
+            self.connection = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=10)
+            self.connection.row_factory = sqlite3.Row
+            version = self.connection.execute("PRAGMA user_version").fetchone()[0]
+            if version != SCHEMA_VERSION:
+                raise DatabaseError(f"Unsupported index schema {version}.")
+        except (sqlite3.Error, OSError, DatabaseError) as exc:
+            if hasattr(self, "connection"):
+                self.connection.close()
+            raise DatabaseError(f"Cannot open search index {self.path}: {exc}") from exc
+
+    def __enter__(self) -> "ReadOnlyDatabase":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.connection.close()
+
+
 class Database:
     """One connection per worker; attachment replacements are atomic."""
 

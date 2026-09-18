@@ -22,7 +22,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 
-from app.core_service import evidence_gateway, search_gateway
+from app.core_service import evidence_gateway, scientific_gateway, search_gateway
+from app.core_service.report_cache import (
+    EvidenceNotFoundError, ReportExpiredError, ReportNotFoundError,
+)
 from app.core_service.resource_manager import ResourceManager
 from app.core_service.state import CoreState
 
@@ -80,6 +83,12 @@ class CoreRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path == "/find_evidence":
             self._handle_find_evidence()
+        elif self.path == "/source":
+            self._handle_source()
+        elif self.path == "/find_evidence_for_claim":
+            self._handle_find_evidence_for_claim()
+        elif self.path == "/verify_citation":
+            self._handle_verify_citation()
         elif self.path == "/search":
             self._handle_search()
         elif self.path == "/evidence_pack":
@@ -123,12 +132,15 @@ class CoreRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
+            cache_options = ({"report_cache": resource_manager.report_cache}
+                             if hasattr(resource_manager, "report_cache") else {})
             result = evidence_gateway.find_evidence(
                 resource_manager.search_service,
                 query=body.get("query", ""),
                 top_k=body.get("top_k", 10),
                 evidence_types=body.get("evidence_types"),
                 database_path=resource_manager.database_path,
+                **cache_options,
             )
         except evidence_gateway.InvalidQueryError as exc:
             self._send_json(400, {"error": "InvalidQuery", "message": str(exc)})
@@ -138,6 +150,76 @@ class CoreRequestHandler(BaseHTTPRequestHandler):
             self._send_json(503, {"error": "DatabaseUnavailable", "message": str(exc)})
         except evidence_gateway.EvidenceEngineError as exc:
             self._send_json(500, {"error": "EvidenceEngineError", "message": str(exc)})
+        else:
+            self._send_json(200, result.model_dump())
+
+    def _handle_handle_error(self, exc: Exception) -> bool:
+        mapping = {
+            ReportNotFoundError: (404, "ReportNotFound"),
+            ReportExpiredError: (410, "ReportExpired"),
+            EvidenceNotFoundError: (404, "EvidenceNotFound"),
+            scientific_gateway.SourceContextUnavailableError: (409, "SourceContextUnavailable"),
+            scientific_gateway.InvalidClaimError: (400, "InvalidClaim"),
+            scientific_gateway.CitationVerificationError: (500, "CitationVerificationError"),
+            ValueError: (400, "InvalidRequest"),
+        }
+        for error_type, (status, name) in mapping.items():
+            if isinstance(exc, error_type):
+                self._send_json(status, {"error": name, "message": str(exc)})
+                return True
+        return False
+
+    def _handle_source(self) -> None:
+        resource_manager = self.server.resource_manager
+        body = self._read_json_body()
+        if body is None or self._not_ready_response(resource_manager) is not None:
+            return
+        try:
+            result = scientific_gateway.get_source(
+                resource_manager.report_cache, resource_manager.database_path,
+                body.get("report_id", ""), body.get("evidence_id", ""),
+                body.get("context_pages", 1))
+        except Exception as exc:
+            if not self._handle_handle_error(exc):
+                self._send_json(500, {"error": "SourceContextUnavailable", "message": str(exc)})
+        else:
+            self._send_json(200, result.model_dump())
+
+    def _handle_find_evidence_for_claim(self) -> None:
+        resource_manager = self.server.resource_manager
+        body = self._read_json_body()
+        if body is None or self._not_ready_response(resource_manager) is not None:
+            return
+        try:
+            result = scientific_gateway.find_evidence_for_claim(
+                resource_manager.search_service, resource_manager.report_cache,
+                body.get("claim", ""), body.get("top_k", 10),
+                body.get("evidence_types"), database_path=resource_manager.database_path)
+        except scientific_gateway.InvalidClaimError as exc:
+            self._send_json(400, {"error": "InvalidClaim", "message": str(exc)})
+        except evidence_gateway.InvalidQueryError as exc:
+            self._send_json(400, {"error": "InvalidClaim", "message": str(exc)})
+        except evidence_gateway.InvalidEvidenceTypeError as exc:
+            self._send_json(400, {"error": "InvalidEvidenceType", "message": str(exc)})
+        except evidence_gateway.DatabaseUnavailableError as exc:
+            self._send_json(503, {"error": "DatabaseUnavailable", "message": str(exc)})
+        except evidence_gateway.EvidenceEngineError as exc:
+            self._send_json(500, {"error": "EvidenceEngineError", "message": str(exc)})
+        else:
+            self._send_json(200, result.model_dump())
+
+    def _handle_verify_citation(self) -> None:
+        resource_manager = self.server.resource_manager
+        body = self._read_json_body()
+        if body is None or self._not_ready_response(resource_manager) is not None:
+            return
+        try:
+            result = scientific_gateway.verify_citation(
+                resource_manager.report_cache, body.get("claim", ""),
+                body.get("report_id", ""), body.get("evidence_id", ""))
+        except Exception as exc:
+            if not self._handle_handle_error(exc):
+                self._send_json(500, {"error": "CitationVerificationError", "message": str(exc)})
         else:
             self._send_json(200, result.model_dump())
 

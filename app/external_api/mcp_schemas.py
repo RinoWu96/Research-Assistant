@@ -1,4 +1,4 @@
-"""Public, minimal response schema for the `find_evidence` MCP tool.
+"""Public, minimal response schemas for the read-only scientific MCP tools.
 
 These models describe only what an external agent needs to consume structured,
 auditable evidence (Task 5 of the V0.4-A brief). They intentionally do not expose
@@ -65,6 +65,12 @@ class EvidenceItem(BaseModel):
     evidence_class: EvidenceTypeName
     classification_confidence: float
     rationale: str
+    # Defaults preserve compatibility for V0.6 callers constructing this public model.
+    claim_match: bool = False
+    material_match: bool = False
+    stimulus_match: bool = False
+    phase_match: bool = False
+    source_type: str = "unspecified"
     retrieval_score: float
     paper: PaperInfo
     passage: PassageInfo
@@ -79,8 +85,79 @@ class RetrievalSummary(BaseModel):
 
 
 class FindEvidenceResult(BaseModel):
+    report_id: str = ""
     query: str
     evidence: list[EvidenceItem]
     returned_count: int
     total_classified_count: int
     retrieval_summary: RetrievalSummary
+
+
+class SourcePaperInfo(BaseModel):
+    title: str
+    authors: list[str]
+    journal: str | None
+    year: str | None
+    doi: str | None
+    zotero_item_key: str
+
+
+class SourcePage(BaseModel):
+    pdf_page: int
+    text: str
+
+
+class SourceInfo(BaseModel):
+    attachment_key: str
+    evidence_page: int
+    start_page: int
+    end_page: int
+    text: str
+    pages: list[SourcePage]
+    evidence_passage: str
+    status: Literal["COMPLETE", "PARTIAL"]
+
+
+class SourceResult(BaseModel):
+    report_id: str
+    evidence_id: str
+    paper: SourcePaperInfo
+    source: SourceInfo
+    provenance: ProvenanceInfo
+
+
+class ClaimEvidenceResult(BaseModel):
+    claim: str
+    report_id: str
+    direct_support: list[EvidenceItem]
+    limiting: list[EvidenceItem]
+    secondary: list[EvidenceItem]
+    contextual: list[EvidenceItem]
+    uncertain: list[EvidenceItem]
+    returned_count: int
+    total_classified_count: int
+    retrieval_summary: RetrievalSummary
+
+
+CitationVerificationStatus = Literal[
+    "SUPPORTED", "SECONDARY_SUPPORT_ONLY", "LIMITS_OR_CONTRADICTS",
+    "NOT_SUPPORTED", "INSUFFICIENT_CONTEXT",
+]
+
+
+class VerificationMatches(BaseModel):
+    claim: bool
+    material: bool
+    stimulus: bool
+    phase: bool
+
+
+class CitationVerificationResult(BaseModel):
+    claim: str
+    report_id: str
+    evidence_id: str
+    status: CitationVerificationStatus
+    reason: str
+    evidence_class: EvidenceTypeName
+    source_type: str
+    matches: VerificationMatches

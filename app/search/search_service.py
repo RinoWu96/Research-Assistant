@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 
 from app.config import DATABASE_PATH
-from app.search.database import Database, DatabaseError
+from app.search.database import DatabaseError, ReadOnlyDatabase
 from app.search.text import query_terms, source_snippet
 
 
@@ -74,7 +74,7 @@ class SearchService:
             JOIN pages g ON g.id=pages_fts.rowid JOIN attachments a ON a.id=g.attachment_id
             JOIN papers p ON p.id=a.paper_id WHERE """ + " AND ".join(where) + " ORDER BY score,p.zotero_key,a.zotero_key,g.page_number LIMIT ? OFFSET ?"
         try:
-            with Database(self.database_path) as db:
+            with ReadOnlyDatabase(self.database_path) as db:
                 rows = db.connection.execute(sql, params).fetchall()
         except sqlite3.Error as exc:
             raise DatabaseError(f"Search failed: {exc}") from exc

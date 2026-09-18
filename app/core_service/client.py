@@ -14,7 +14,9 @@ the Core.
 import httpx
 
 from app.core_service import discovery
-from app.external_api.mcp_schemas import FindEvidenceResult
+from app.external_api.mcp_schemas import (
+    CitationVerificationResult, ClaimEvidenceResult, FindEvidenceResult, SourceResult,
+)
 
 DEFAULT_TIMEOUT_SECONDS = 120.0
 # /health and /status are designed to always be fast (V0.5, section 11) - a
@@ -60,6 +62,30 @@ class SearchEngineError(CoreClientError):
     """The Core's retrieval backend raised an unexpected error."""
 
 
+class ReportNotFoundError(CoreClientError):
+    pass
+
+
+class ReportExpiredError(CoreClientError):
+    pass
+
+
+class EvidenceNotFoundError(CoreClientError):
+    pass
+
+
+class SourceContextUnavailableError(CoreClientError):
+    pass
+
+
+class InvalidClaimError(CoreClientError):
+    pass
+
+
+class CitationVerificationError(CoreClientError):
+    pass
+
+
 _ERROR_TYPES: dict[str, type[CoreClientError]] = {
     "InvalidQuery": InvalidQueryError,
     "InvalidEvidenceType": InvalidEvidenceTypeError,
@@ -69,6 +95,12 @@ _ERROR_TYPES: dict[str, type[CoreClientError]] = {
     "SearchEngineError": SearchEngineError,
     "ResearchAssistantLoading": ResearchAssistantLoadingError,
     "ResearchAssistantUnavailable": ResearchAssistantUnavailableError,
+    "ReportNotFound": ReportNotFoundError,
+    "ReportExpired": ReportExpiredError,
+    "EvidenceNotFound": EvidenceNotFoundError,
+    "SourceContextUnavailable": SourceContextUnavailableError,
+    "InvalidClaim": InvalidClaimError,
+    "CitationVerificationError": CitationVerificationError,
 }
 
 
@@ -134,6 +166,35 @@ class CoreClient:
         if response.status_code != 200:
             self._raise_for_error_response(base_url, response)
         return FindEvidenceResult.model_validate(response.json())
+
+    def get_source(self, report_id: str, evidence_id: str,
+                   context_pages: int = 1) -> SourceResult:
+        return SourceResult.model_validate(self._post(
+            "/source", {"report_id": report_id, "evidence_id": evidence_id,
+                        "context_pages": context_pages}))
+
+    def find_evidence_for_claim(self, claim: str, top_k: int = 10,
+                                evidence_types: list[str] | None = None) -> ClaimEvidenceResult:
+        return ClaimEvidenceResult.model_validate(self._post(
+            "/find_evidence_for_claim",
+            {"claim": claim, "top_k": top_k, "evidence_types": evidence_types}))
+
+    def verify_citation(self, claim: str, report_id: str,
+                        evidence_id: str) -> CitationVerificationResult:
+        return CitationVerificationResult.model_validate(self._post(
+            "/verify_citation", {"claim": claim, "report_id": report_id,
+                                 "evidence_id": evidence_id}))
+
+    def _post(self, path: str, payload: dict) -> dict:
+        base_url = self._base_url()
+        try:
+            response = httpx.post(f"{base_url}{path}", json=payload, timeout=self.timeout)
+        except httpx.HTTPError as exc:
+            raise ResearchAssistantUnavailableError(
+                f"Could not reach the Research Assistant Core at {base_url}: {exc}") from exc
+        if response.status_code != 200:
+            self._raise_for_error_response(base_url, response)
+        return response.json()
 
     def search(self, query: str, mode: str = "hybrid", top_k: int = 20, **options) -> list[dict]:
         """Run the existing Keyword/Semantic/Hybrid retrieval backend via the Core.

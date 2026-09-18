@@ -20,7 +20,7 @@ from app.evidence.evidence_service import EvidenceService
 from app.evidence.models import ClassifiedEvidence, EvidenceReport
 from app.evidence.paper_identity import PaperIdentity, load_paper_records, normalize_doi, resolve_identities
 from app.evidence.ranker import rank
-from app.search.database import Database
+from app.search.database import ReadOnlyDatabase
 from app.search.hybrid_search import UnifiedSearchService
 
 
@@ -71,7 +71,7 @@ class EvidenceReportService:
                                   passage.original_text, passage.hybrid_score)
                       for p in pack.papers for passage in p.passages]
 
-        with Database(self.database_path) as db:
+        with ReadOnlyDatabase(self.database_path) as db:
             local_records = load_paper_records(db)
             identities = resolve_identities(local_records)
 
