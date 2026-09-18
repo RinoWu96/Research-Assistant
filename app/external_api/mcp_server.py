@@ -1,12 +1,19 @@
-"""V0.4-A: MCP server exposing the existing Research Assistant Evidence Engine
-as one external tool, `find_evidence`, for MCP-compatible agents (Claude Code,
-Codex). Runnable independently of the PySide6 desktop GUI.
+"""MCP server exposing the Research Assistant Core Service as one external
+tool, `find_evidence`, for MCP-compatible agents (Claude Code, Codex).
+Runnable independently of the PySide6 desktop GUI.
+
+V0.5: this process is a lightweight proxy - it never constructs or imports
+the Evidence Engine, the semantic index, or the embedder. Those are owned by
+the separate, persistent Research Assistant Core Service (`app.core_service`);
+this server only forwards `find_evidence` calls to it over HTTP, via
+`app.external_api.mcp_adapter`. Restarting this process never unloads the
+embedding model, because the model lives in the Core process, not here.
 
 Read-only: `find_evidence` never modifies Zotero, `data/literature.db`, the
-semantic index, or any PDF - see `app.external_api.mcp_adapter`, which is the
-only module this server calls into for evidence.
+semantic index, or any PDF.
 
-Run directly:
+Run directly (the Core Service must be started separately - see
+`app.core_service`):
 
     .venv\\Scripts\\python.exe -m app.external_api.mcp_server
 """
@@ -27,11 +34,9 @@ if __package__ in (None, ""):
 
 from mcp.server.fastmcp import FastMCP
 
-from app.config import DATABASE_PATH
+from app.core_service import discovery
 from app.external_api import mcp_adapter
 from app.external_api.mcp_schemas import EvidenceTypeName, FindEvidenceResult
-
-SEMANTIC_INDEX_FILES = ("index.faiss", "chunks.sqlite", "index_metadata.json")
 
 mcp = FastMCP(
     name="research-assistant-evidence",
@@ -66,16 +71,15 @@ def _startup_environment_warnings() -> list[str]:
     """Non-fatal environment checks, reported to stderr only.
 
     The server still starts (and still exposes `find_evidence` over MCP) even
-    when these fail - a missing/incomplete local index is a `find_evidence`-time
-    `DatabaseUnavailableError`, not a reason to refuse to start.
+    when the Core Service is not currently reachable - that is a
+    `find_evidence`-time `ResearchAssistantUnavailableError`, not a reason to
+    refuse to start. This probe is a fast, lightweight HTTP health check
+    (`app.core_service.discovery`); it never imports the Evidence Engine.
     """
-    warnings = []
-    if not DATABASE_PATH.exists():
-        warnings.append(f"literature.db not found at {DATABASE_PATH}; find_evidence will fail until it exists.")
-    semantic_dir = DATABASE_PATH.parent / "semantic"
-    if not all((semantic_dir / name).is_file() for name in SEMANTIC_INDEX_FILES):
-        warnings.append(f"semantic index incomplete at {semantic_dir}; find_evidence will fail until it is built.")
-    return warnings
+    if discovery.discover_running_core() is None:
+        return ["Research Assistant Core Service not detected; find_evidence will fail until it is "
+                "started ('.venv\\Scripts\\python.exe -m app.core_service')."]
+    return []
 
 
 def main() -> None:

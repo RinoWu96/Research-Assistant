@@ -1,153 +1,87 @@
-"""Unit tests for the MCP adapter boundary (app/external_api/mcp_adapter.py).
+"""Unit tests for the MCP proxy boundary (app/external_api/mcp_adapter.py).
 
-These mock `EvidenceReportService` itself - the "MCP adapter boundary" - so
-they test only the MCP-facing validation/filtering/translation logic, not the
-Evidence Engine (already covered by tests/test_evidence_report.py and friends).
-A separate end-to-end test using the real Evidence Engine lives in
-tests/test_mcp_integration.py.
+V0.5: this module is a thin HTTP proxy to the Research Assistant Core
+Service - it must never import or construct the Evidence Engine, the
+semantic index, or the embedder (section 16, requirement 7). These tests
+mock `app.core_service.client.CoreClient.find_evidence` and check only
+error translation and forwarding; the actual evidence-report logic is
+tested against a real `EvidenceReportService` in
+tests/test_core_evidence_gateway.py and tests/test_core_evidence_gateway_integration.py.
 """
 
 import unittest
 from unittest.mock import patch
 
-from app.evidence.citation_tracer import CitationStatus, CitationTrace
-from app.evidence.classifier import EvidenceClass
-from app.evidence.models import ClassifiedEvidence, EvidenceReport
-from app.evidence.paper_identity import PaperIdentity
+from app.core_service import client as core_client
+from app.external_api import mcp_adapter
 from app.external_api.mcp_adapter import (
-    VALID_EVIDENCE_CLASSES,
     DatabaseUnavailableError,
     EvidenceEngineError,
     InvalidEvidenceTypeError,
     InvalidQueryError,
+    ResearchAssistantLoadingError,
+    ResearchAssistantUnavailableError,
     find_evidence,
 )
-from app.search.database import DatabaseError
+from app.external_api.mcp_schemas import FindEvidenceResult, RetrievalSummary
 
 
-def _identity(key="P1", doi="10.1/x", zotero_keys=None):
-    return PaperIdentity(f"doi:{key}", doi, zotero_keys or (key,), f"Title {key}",
-                         (f"Author {key}",), "2020", (1,))
+def _fake_result() -> FindEvidenceResult:
+    return FindEvidenceResult(
+        query="claim", evidence=[], returned_count=0, total_classified_count=0,
+        retrieval_summary=RetrievalSummary(candidate_count=0, duplicate_passages_removed=0,
+                                           duplicate_papers_merged=0))
 
 
-def _item(evidence_id, evidence_class, *, doi="10.1/x", zotero_key="P1", zotero_keys=None,
-          score=0.5, provenance="original_retrieval", parent=None, traces=()):
-    return ClassifiedEvidence(
-        evidence_id=evidence_id, paper_identity=_identity(zotero_key, doi, zotero_keys),
-        title=f"Title {zotero_key}", authors=(f"Author {zotero_key}",), journal="Journal",
-        year="2020", doi=doi, zotero_key=zotero_key, attachment_key=f"A{zotero_key}",
-        physical_pdf_page=1, pdf_path=f"{zotero_key}.pdf", original_text="Original passage text.",
-        retrieval_score=score, evidence_class=evidence_class, evidence_confidence=0.8,
-        rationale="because", claim_match=True, stimulus_match=True, material_match=True,
-        phase_match=True, classification_source_type="unspecified", provenance=provenance,
-        parent_evidence_id=parent, citation_traces=traces)
+class ProxyNeverImportsTheHeavyEngineTests(unittest.TestCase):
+    """The MCP process must stay lightweight: no Evidence Engine, semantic
+    index, or embedder import anywhere in its module graph (section 6/15)."""
+
+    def test_mcp_adapter_module_has_no_heavy_engine_names(self):
+        heavy_names = {"EvidenceReportService", "UnifiedSearchService", "LocalEmbedder", "SemanticIndex"}
+        self.assertFalse(heavy_names & set(dir(mcp_adapter)))
 
 
-def _report(items):
-    return EvidenceReport("query", tuple(items), candidate_count=len(items),
-                          duplicate_passages_removed=0, duplicate_papers_merged=0)
+class FindEvidenceForwardingTests(unittest.TestCase):
+    @patch.object(mcp_adapter._client, "find_evidence")
+    def test_forwards_query_top_k_and_evidence_types_unchanged(self, fake_find):
+        fake_find.return_value = _fake_result()
+        find_evidence("claim", top_k=3, evidence_types=["DIRECT"])
+        fake_find.assert_called_once_with("claim", top_k=3, evidence_types=["DIRECT"])
 
-
-class EvidenceVocabularyTests(unittest.TestCase):
-    def test_public_evidence_types_match_internal_classifier_vocabulary(self):
-        from app.external_api.mcp_schemas import EvidenceTypeName
-        self.assertEqual(set(EvidenceTypeName.__args__), VALID_EVIDENCE_CLASSES)
-
-
-class FindEvidenceInputValidationTests(unittest.TestCase):
-    def test_empty_query_rejected(self):
-        with self.assertRaises(InvalidQueryError):
-            find_evidence("   ")
-
-    def test_non_string_query_rejected(self):
-        with self.assertRaises(InvalidQueryError):
-            find_evidence(None)  # type: ignore[arg-type]
-
-    def test_invalid_evidence_type_rejected(self):
-        with self.assertRaises(InvalidEvidenceTypeError):
-            find_evidence("claim", evidence_types=["NOT_A_CLASS"])
-
-    def test_top_k_too_low_rejected(self):
-        with self.assertRaises(InvalidQueryError):
-            find_evidence("claim", top_k=0)
-
-    def test_top_k_too_high_rejected(self):
-        with self.assertRaises(InvalidQueryError):
-            find_evidence("claim", top_k=10_000)
-
-
-@patch("app.external_api.mcp_adapter.EvidenceReportService")
-class FindEvidenceEngineDelegationTests(unittest.TestCase):
-    def test_calls_real_evidence_report_service_not_a_reimplementation(self, service_cls):
-        instance = service_cls.return_value
-        instance.build_report.return_value = _report([_item("E1", EvidenceClass.DIRECT)])
-        find_evidence("In2Se3 phase change by strain")
-        service_cls.assert_called_once_with()
-        instance.build_report.assert_called_once_with("In2Se3 phase change by strain")
-
-    def test_database_error_becomes_structured_error(self, service_cls):
-        service_cls.return_value.build_report.side_effect = DatabaseError("locked")
-        with self.assertRaises(DatabaseUnavailableError):
-            find_evidence("claim")
-
-    def test_unexpected_engine_exception_becomes_structured_error(self, service_cls):
-        service_cls.return_value.build_report.side_effect = RuntimeError("boom")
-        with self.assertRaises(EvidenceEngineError):
-            find_evidence("claim")
-
-    def test_filtering_happens_after_classification_and_preserves_rank_order(self, service_cls):
-        items = [_item("E1", EvidenceClass.DIRECT), _item("E2", EvidenceClass.LIMITING, zotero_key="P2"),
-                 _item("E3", EvidenceClass.SECONDARY, zotero_key="P3")]
-        service_cls.return_value.build_report.return_value = _report(items)
-        result = find_evidence("claim", evidence_types=["DIRECT", "LIMITING"])
-        self.assertEqual([e.evidence_id for e in result.evidence], ["E1", "E2"])
-        self.assertEqual(result.total_classified_count, 2)
-
-    def test_evidence_types_filter_never_hides_limiting_evidence(self, service_cls):
-        items = [_item("E1", EvidenceClass.DIRECT), _item("E2", EvidenceClass.LIMITING, zotero_key="P2")]
-        service_cls.return_value.build_report.return_value = _report(items)
-        result = find_evidence("supporting evidence for claim")
-        self.assertIn("LIMITING", {e.evidence_class for e in result.evidence})
-
-    def test_top_k_applies_after_filtering(self, service_cls):
-        items = [_item(f"E{i}", EvidenceClass.DIRECT, zotero_key=f"P{i}") for i in range(5)]
-        service_cls.return_value.build_report.return_value = _report(items)
-        result = find_evidence("claim", top_k=2)
-        self.assertEqual(len(result.evidence), 2)
-        self.assertEqual(result.total_classified_count, 5)
-
-    def test_all_evidence_classes_serialize_correctly(self, service_cls):
-        classes = [EvidenceClass.DIRECT, EvidenceClass.SECONDARY, EvidenceClass.LIMITING,
-                   EvidenceClass.CONTEXTUAL, EvidenceClass.UNCERTAIN]
-        items = [_item(f"E{i}", cls, zotero_key=f"P{i}") for i, cls in enumerate(classes)]
-        service_cls.return_value.build_report.return_value = _report(items)
-        result = find_evidence("claim", top_k=10)
-        self.assertEqual({e.evidence_class for e in result.evidence}, {c.value for c in classes})
-
-    def test_structured_output_contains_provenance_and_citation_traces(self, service_cls):
-        trace = CitationTrace(marker="[30]", reference_number=30, status=CitationStatus.RESOLVED_LOCAL,
-                              reference_doi="10.1/primary", reference_title_guess=None,
-                              reference_authors_guess=None, reference_year=None,
-                              resolved_identity=_identity("PRIM", "10.1/primary", ("PRIM1", "PRIM2")))
-        secondary = _item("E1", EvidenceClass.SECONDARY, traces=(trace,))
-        traced = _item("E2", EvidenceClass.DIRECT, zotero_key="PRIM", doi="10.1/primary",
-                       provenance="citation_traced", parent="E1")
-        service_cls.return_value.build_report.return_value = _report([secondary, traced])
+    @patch.object(mcp_adapter._client, "find_evidence")
+    def test_returns_the_client_result_unmodified(self, fake_find):
+        fake_find.return_value = _fake_result()
         result = find_evidence("claim")
-        by_id = {e.evidence_id: e for e in result.evidence}
-        self.assertEqual(by_id["E1"].citation_traces[0].resolution_status, "resolved_local")
-        self.assertEqual(by_id["E1"].citation_traces[0].resolved_paper.zotero_item_keys, ["PRIM1", "PRIM2"])
-        self.assertEqual(by_id["E1"].provenance.origin, "original_retrieval")
-        self.assertEqual(by_id["E1"].provenance.parent_evidence_id, None)
-        self.assertEqual(by_id["E2"].provenance.origin, "citation_tracing")
-        self.assertEqual(by_id["E2"].provenance.parent_evidence_id, "E1")
+        self.assertIs(result, fake_find.return_value)
 
-    def test_missing_optional_fields_are_null_not_fabricated(self, service_cls):
-        item = _item("E1", EvidenceClass.UNCERTAIN, doi="")
-        service_cls.return_value.build_report.return_value = _report([item])
-        result = find_evidence("claim")
-        self.assertIsNone(result.evidence[0].paper.doi)
-        self.assertEqual(result.evidence[0].citation_traces, [])
+
+class ErrorTranslationTests(unittest.TestCase):
+    CASES = [
+        (core_client.InvalidQueryError, InvalidQueryError),
+        (core_client.InvalidEvidenceTypeError, InvalidEvidenceTypeError),
+        (core_client.DatabaseUnavailableError, DatabaseUnavailableError),
+        (core_client.EvidenceEngineError, EvidenceEngineError),
+        (core_client.ResearchAssistantLoadingError, ResearchAssistantLoadingError),
+        (core_client.ResearchAssistantUnavailableError, ResearchAssistantUnavailableError),
+    ]
+
+    def test_each_core_client_error_maps_to_its_mcp_error(self):
+        for client_error_cls, mcp_error_cls in self.CASES:
+            with self.subTest(client_error_cls=client_error_cls):
+                with patch.object(mcp_adapter._client, "find_evidence",
+                                   side_effect=client_error_cls("boom")):
+                    with self.assertRaises(mcp_error_cls) as ctx:
+                        find_evidence("claim")
+                self.assertIn("boom", str(ctx.exception))
+
+    def test_core_unavailable_is_a_distinct_clear_error_not_a_silent_fallback(self):
+        """Section 15: if the Core is not running, the proxy must raise a clear
+        structured error and never fall back to loading the Evidence Engine."""
+        with patch.object(mcp_adapter._client, "find_evidence",
+                           side_effect=core_client.ResearchAssistantUnavailableError("Core not running")):
+            with self.assertRaises(ResearchAssistantUnavailableError):
+                find_evidence("claim")
 
 
 if __name__ == "__main__":

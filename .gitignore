@@ -11,3 +11,5 @@ data/*.db-*
 docs/screenshots/
 data/vectors/
 data/semantic/
+data/core_service.lock
+data/core_service.discovery.json

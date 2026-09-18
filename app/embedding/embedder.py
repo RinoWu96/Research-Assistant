@@ -1,6 +1,7 @@
 """Lazy, CPU-only local embeddings with no API or CUDA dependency."""
 
 from collections.abc import Sequence
+import threading
 from typing import Any
 
 
@@ -23,22 +24,34 @@ class LocalEmbedder:
         self.batch_size = batch_size
         self.local_files_only = local_files_only
         self._model = model
+        self._load_lock = threading.Lock()
 
     def _load(self):
+        """Load the model at most once, even if two threads call this concurrently.
+
+        The Research Assistant Core Service (app.core_service) can receive a
+        background warm-up and a real `find_evidence` request racing into the
+        same process-wide embedder; the outer check avoids taking the lock on
+        the (overwhelmingly common) already-loaded path, and the inner check
+        stops a second thread from re-loading after losing the race.
+        """
         if self._model is not None:
             return self._model
-        try:
-            from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(
-                self.model_name,
-                device="cpu",
-                local_files_only=self.local_files_only,
-                trust_remote_code=False,
-            )
-            return self._model
-        except Exception as exc:
-            mode = "local cache" if self.local_files_only else "local cache or model download"
-            raise EmbeddingError(f"Could not load {self.model_name} from {mode}: {exc}") from exc
+        with self._load_lock:
+            if self._model is not None:
+                return self._model
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._model = SentenceTransformer(
+                    self.model_name,
+                    device="cpu",
+                    local_files_only=self.local_files_only,
+                    trust_remote_code=False,
+                )
+                return self._model
+            except Exception as exc:
+                mode = "local cache" if self.local_files_only else "local cache or model download"
+                raise EmbeddingError(f"Could not load {self.model_name} from {mode}: {exc}") from exc
 
     @property
     def dimension(self) -> int:

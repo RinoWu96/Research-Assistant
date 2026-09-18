@@ -1,24 +1,33 @@
-"""End-to-end test: find_evidence run against a real EvidenceReportService,
-wired to the same fixture corpus as tests/test_evidence_report.py.
+"""End-to-end test: MCP proxy -> real Core Service HTTP API -> real
+EvidenceReportService, wired to the same fixture corpus as
+tests/test_evidence_report.py.
 
-Only the *construction* of the EvidenceReportService instance is substituted
-(so the test uses an isolated temp database instead of the user's real
-literature.db); build_report itself - retrieval, passage/paper-identity
-deduplication, classification, citation tracing and ranking - runs completely
-unmodified. This is what proves the MCP layer calls the real V0.3.2 pipeline
-instead of reimplementing it (Task 10.3 of the V0.4-A brief).
+Only the *database* is substituted (an isolated temp corpus instead of the
+user's real literature.db); everything else - the real HTTP round trip
+through `app.core_service.http_api`, the Core's `ResourceManager`, and
+`build_report` itself (retrieval, passage/paper-identity deduplication,
+classification, citation tracing, ranking) - runs completely unmodified.
+This is what proves the MCP layer calls the real Core Service instead of
+reimplementing anything, and that the Core calls the real V0.3.2 pipeline
+instead of reimplementing it (V0.5 brief, section 16, requirements 6, 8, 9).
 
-A separate, manual check against the user's actual Zotero-backed
-data/literature.db is described in the V0.4-A completion report.
+A separate, real-machine integration test against the user's actual
+Zotero-backed data/literature.db (including the real BGE model, not
+`FakeEmbedder`) is described in the V0.5 completion report.
 """
 
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
+from app.core_service import client as core_client
+from app.core_service.server import create_server
+from app.core_service.state import CoreState
 from app.embedding.semantic_index import SemanticIndex
-from app.evidence.report import EvidenceReportService
+from app.external_api import mcp_adapter
 from app.external_api.mcp_adapter import find_evidence
 from app.search.hybrid_search import UnifiedSearchService
 from tests.evidence_report_fixtures import build_in2se3_corpus
@@ -27,21 +36,42 @@ from tests.semantic_fixtures import FakeEmbedder
 CLAIM = "In2Se3 phase change by strain"
 
 
-class McpAdapterRealPipelineTests(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        root = Path(self._tmp.name)
-        self.database = root / "literature.db"
-        build_in2se3_corpus(self.database)
-        index = SemanticIndex(self.database, root / "semantic", FakeEmbedder())
+class McpProxyRealCoreIntegrationTests(unittest.TestCase):
+    """A real MCP proxy talking, over real HTTP, to a real Core Service."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        cls.database = root / "literature.db"
+        build_in2se3_corpus(cls.database)
+        index = SemanticIndex(cls.database, root / "semantic", FakeEmbedder())
         index.update()
-        search = UnifiedSearchService(self.database, semantic_index=index)
-        self._service = EvidenceReportService(self.database, search)
-        self._patcher = patch("app.external_api.mcp_adapter.EvidenceReportService",
-                              return_value=self._service)
-        self._patcher.start()
-        self.addCleanup(self._patcher.stop)
-        self.addCleanup(self._tmp.cleanup)
+
+        cls.server = create_server(
+            cls.database, port=0,
+            search_service_factory=lambda: UnifiedSearchService(cls.database, semantic_index=index))
+        cls.server.resource_manager.start_background_init()
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+        deadline = time.perf_counter() + 5.0
+        while cls.server.resource_manager.state != CoreState.READY:
+            if time.perf_counter() > deadline:
+                raise AssertionError(f"Core never reached READY: {cls.server.resource_manager.status()}")
+            time.sleep(0.02)
+
+        base_url = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        cls._client_patch = patch.object(mcp_adapter, "_client", core_client.CoreClient(base_url=base_url))
+        cls._client_patch.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._client_patch.stop()
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=5)
+        cls._tmp.cleanup()
 
     def test_real_pipeline_returns_all_expected_classes_with_correct_identity(self):
         result = find_evidence(CLAIM, top_k=10)
@@ -67,6 +97,14 @@ class McpAdapterRealPipelineTests(unittest.TestCase):
         self.assertEqual({item.evidence_class for item in result.evidence}, {"DIRECT", "LIMITING"})
         # The underlying candidate pool (pre-filter) is untouched by evidence_types.
         self.assertGreater(result.retrieval_summary.candidate_count, 0)
+
+    def test_second_call_reuses_the_same_loaded_search_service(self):
+        """Sequential find_evidence calls must not reconstruct the embedder or
+        search service (V0.5 brief, section 16, requirement 5)."""
+        search_service_before = self.server.resource_manager.search_service
+        find_evidence(CLAIM, top_k=1)
+        find_evidence(CLAIM, top_k=1)
+        self.assertIs(self.server.resource_manager.search_service, search_service_before)
 
 
 if __name__ == "__main__":
