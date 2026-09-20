@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import signal
 import sys
+from threading import Event, Thread
 
 from app.config import CORE_SERVICE_DEFAULT_PORT, CORE_SERVICE_HOST, DATABASE_PATH
 from app.core_service import discovery
@@ -51,7 +52,8 @@ def create_server(database_path: Path = DATABASE_PATH, port: int = CORE_SERVICE_
         return CoreHTTPServer((CORE_SERVICE_HOST, 0), resource_manager)
 
 
-def run(database_path: Path = DATABASE_PATH) -> int:
+def run(database_path: Path = DATABASE_PATH, *, stop_event: Event | None = None,
+        install_signal_handlers: bool = True) -> int:
     lock = discovery.SingletonLock()
     if not lock.acquire():
         existing = discovery.discover_running_core()
@@ -71,16 +73,25 @@ def run(database_path: Path = DATABASE_PATH) -> int:
 
         server.resource_manager.start_background_init()
 
-        def _request_shutdown(signum, frame):
-            raise KeyboardInterrupt
+        if install_signal_handlers:
+            def _request_shutdown(signum, frame):
+                raise KeyboardInterrupt
 
-        signal.signal(signal.SIGINT, _request_shutdown)
-        try:
-            signal.signal(signal.SIGTERM, _request_shutdown)
-        except (AttributeError, ValueError):
-            pass
-        if sys.platform == "win32" and hasattr(signal, "SIGBREAK"):
-            signal.signal(signal.SIGBREAK, _request_shutdown)
+            signal.signal(signal.SIGINT, _request_shutdown)
+            try:
+                signal.signal(signal.SIGTERM, _request_shutdown)
+            except (AttributeError, ValueError):
+                pass
+            if sys.platform == "win32" and hasattr(signal, "SIGBREAK"):
+                signal.signal(signal.SIGBREAK, _request_shutdown)
+
+        if stop_event is not None:
+            def _watch_for_stop() -> None:
+                stop_event.wait()
+                if stop_event.is_set():
+                    server.shutdown()
+
+            Thread(target=_watch_for_stop, daemon=True, name="core-stop-watcher").start()
 
         try:
             server.serve_forever(poll_interval=0.5)

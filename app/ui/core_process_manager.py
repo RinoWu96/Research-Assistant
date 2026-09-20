@@ -48,6 +48,14 @@ def _console_python() -> Path:
     return executable.with_name("python.exe") if executable.name.lower() == "pythonw.exe" else executable
 
 
+def _core_launch_command() -> tuple[list[str], Path]:
+    """Return the Core command for source or packaged execution."""
+    if getattr(sys, "frozen", False):
+        distribution = Path(sys.executable).resolve().parent
+        return [str(distribution / "ResearchAssistantCore.exe")], distribution
+    return [str(_console_python()), "-m", "app.core_service"], PROJECT_ROOT
+
+
 class CoreProcessManager:
     """Detects, or starts, one Core Service; never stops it."""
 
@@ -71,8 +79,9 @@ class CoreProcessManager:
         logger.info("No Research Assistant Core detected; starting one.")
         try:
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            command, working_directory = _core_launch_command()
             process = subprocess.Popen(
-                [str(_console_python()), "-m", "app.core_service"], cwd=str(PROJECT_ROOT),
+                command, cwd=str(working_directory),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=flags)
         except OSError:

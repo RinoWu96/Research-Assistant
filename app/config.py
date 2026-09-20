@@ -7,14 +7,28 @@ overrides it without any production code needing a developer-specific path.
 
 import os
 from pathlib import Path
+import sys
 
 ZOTERO_API_URL = "http://localhost:23119/api/"
 # Same local service, avoiding slow IPv6 fallback observed on Windows.
 ZOTERO_FAST_API_URL = "http://127.0.0.1:23119/api/"
 REQUEST_TIMEOUT_SECONDS = 5.0
 
-APP_DATA_DIR = Path(os.environ.get("RESEARCH_ASSISTANT_DATA_DIR")
-                     or Path(__file__).resolve().parents[1] / "data")
+def _default_app_data_dir() -> Path:
+    """Return a stable writable data directory for source and frozen builds.
+
+    A PyInstaller bundle is extracted below ``_MEIPASS`` at runtime, so paths
+    derived from ``__file__`` are temporary and must never own the literature
+    database. Development keeps the existing repository-local default.
+    """
+    if getattr(sys, "frozen", False):
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+        return base / "ResearchAssistant" / "data"
+    return Path(__file__).resolve().parents[1] / "data"
+
+
+APP_DATA_DIR = Path(os.environ.get("RESEARCH_ASSISTANT_DATA_DIR") or _default_app_data_dir())
 DATABASE_PATH = APP_DATA_DIR / "literature.db"
 
 # V0.5 Research Assistant Core Service: localhost-only HTTP API in front of

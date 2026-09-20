@@ -122,7 +122,11 @@ def _startup_environment_warnings() -> list[str]:
 
 def main() -> None:
     # stdio transport uses stdout for protocol messages; logging must go to stderr only.
-    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s", stream=sys.stderr)
+    # FastMCP and its dependencies may install a Rich handler during import.
+    # Replace it explicitly so the frozen proxy keeps routine dependency logs
+    # off stderr as well as preserving stdout exclusively for MCP protocol data.
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s",
+                        stream=sys.stderr, force=True)
     for warning in _startup_environment_warnings():
         logging.warning(warning)
     mcp.run(transport="stdio")

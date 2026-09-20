@@ -10,8 +10,9 @@ from PySide6.QtWidgets import QApplication
 
 from app.ui.main_window import MainWindow
 from app.config import DATABASE_PATH
+from app.version import __version__
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(description="Research Assistant: local Zotero PDF search")
     parser.add_argument("--database", type=Path, default=DATABASE_PATH)
     parser.add_argument("--query", default="", help="Run an initial keyword query")
@@ -26,6 +27,11 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", handlers=handlers)
     app = QApplication([sys.argv[0]])
     app.setApplicationName("Research Assistant")
+    app.setApplicationVersion(__version__)
     window = MainWindow(args.database, initial_query=args.query)
     window.show()
     sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

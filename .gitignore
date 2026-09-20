@@ -1,4 +1,5 @@
 .venv/
+.venv-build/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -13,3 +14,7 @@ data/vectors/
 data/semantic/
 data/core_service.lock
 data/core_service.discovery.json
+build/
+dist/
+release/
+*.spec

@@ -6,6 +6,7 @@ model, is ever started by these tests.
 """
 
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -15,7 +16,26 @@ from unittest.mock import MagicMock, patch
 from PySide6.QtWidgets import QApplication
 from PySide6.QtTest import QTest
 
-from app.ui.core_process_manager import UNAVAILABLE, CoreMonitor, CoreProcessManager
+from app.ui.core_process_manager import (
+    UNAVAILABLE, CoreMonitor, CoreProcessManager, _core_launch_command,
+)
+
+
+class CoreLaunchCommandTests(unittest.TestCase):
+    def test_source_build_uses_python_module(self):
+        with patch("app.ui.core_process_manager.sys.frozen", False, create=True):
+            command, cwd = _core_launch_command()
+        self.assertEqual(command[1:], ["-m", "app.core_service"])
+        self.assertTrue(command[0].lower().endswith("python.exe"))
+        self.assertTrue((cwd / "app").is_dir())
+
+    def test_frozen_build_uses_sibling_core_executable(self):
+        executable = r"C:\Portable\ResearchAssistant\ResearchAssistant.exe"
+        with patch("app.ui.core_process_manager.sys.frozen", True, create=True), \
+             patch("app.ui.core_process_manager.sys.executable", executable):
+            command, cwd = _core_launch_command()
+        self.assertEqual(command, [r"C:\Portable\ResearchAssistant\ResearchAssistantCore.exe"])
+        self.assertEqual(cwd, Path(r"C:\Portable\ResearchAssistant"))
 
 
 class DetectExistingCoreTests(unittest.TestCase):
