@@ -9,8 +9,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.config import REQUEST_TIMEOUT_SECONDS, ZOTERO_API_URL
-from app.zotero.models import Attachment, Collection, Paper
+from app.config import READ_TIMEOUT_SECONDS, REQUEST_TIMEOUT_SECONDS, ZOTERO_API_URL
+from app.zotero.models import LEGACY_SOURCE_IDENTITY, Attachment, Collection, Paper
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +30,11 @@ class ZoteroClient:
                 or url.fragment or url.username or url.password):
             raise ValueError("Zotero must use the local http://localhost:23119/api/ endpoint.")
         self._http = httpx.Client(
-            base_url=base_url, timeout=REQUEST_TIMEOUT_SECONDS,
+            base_url=base_url, timeout=httpx.Timeout(REQUEST_TIMEOUT_SECONDS, read=READ_TIMEOUT_SECONDS),
             follow_redirects=False, trust_env=False, transport=transport,
             headers={"Zotero-API-Version": "3", "Accept": "application/json"},
         )
-        self.source_identity = "local-personal-library"
+        self.source_identity = LEGACY_SOURCE_IDENTITY
 
     def __enter__(self) -> "ZoteroClient":
         return self
@@ -69,11 +69,11 @@ class ZoteroClient:
             self.source_identity = server_id
             self._http.headers["Zotero-Server-ID"] = server_id
 
-    def _list(self, path: str) -> list[dict[str, Any]]:
+    def _list(self, path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
         start, limit = 0, 100
         while True:
-            response = self._get(path, {"format": "json", "start": start, "limit": limit})
+            response = self._get(path, {**(params or {}), "format": "json", "start": start, "limit": limit})
             try:
                 batch = response.json()
             except ValueError as exc:
@@ -141,7 +141,8 @@ class ZoteroClient:
 
     def library_items(self) -> Iterator[Paper]:
         """Stream papers from a complete metadata snapshot, resolving PDFs lazily."""
-        records = self._list("users/0/items")
+        # Annotations are skipped below anyway and can outnumber everything else.
+        records = self._list("users/0/items", {"itemType": "-annotation"})
         children: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in records:
             data = row.get("data", {})

@@ -20,7 +20,7 @@ from app.evidence.models import EvidencePack, PaperEvidence
 from app.external_api.mcp_schemas import FindEvidenceResult
 from app.parser.pdf_parser import render_page
 from app.search.database import Database
-from app.search.indexer import Indexer
+from app.search.indexer import Indexer, update_library
 from app.search.hybrid_search import HybridResult
 from app.search.text import normalized_with_offsets, query_terms
 from app.ui.core_process_manager import UNAVAILABLE, CoreMonitor, CoreProcessManager
@@ -499,7 +499,9 @@ class MainWindow(QMainWindow):
         if self.busy:
             return
         self.index_counts.setText("Incremental update: 0 indexed, 0 skipped, 0 updated, 0 failed")
-        self._submit("index", lambda progress: Indexer(path).run(key, progress=progress, cancel=cancel))
+        self._submit("index", lambda progress: update_library(
+            lambda: Indexer(path).run(key, progress=progress, cancel=cancel), path,
+            progress=progress, cancel=cancel))
 
     def start_rebuild(self) -> None:
         """Explicit whole-library re-extraction, separate from incremental update."""
@@ -507,7 +509,9 @@ class MainWindow(QMainWindow):
             return
         path, cancel = self.database_path, self.cancel_event
         self.index_counts.setText("Full Rebuild · entire personal library: 0 indexed, 0 skipped, 0 updated, 0 failed")
-        self._submit("index", lambda progress: Indexer(path).rebuild(progress=progress, cancel=cancel))
+        self._submit("index", lambda progress: update_library(
+            lambda: Indexer(path).rebuild(progress=progress, cancel=cancel), path,
+            progress=progress, cancel=cancel))
 
     def start_search(self) -> None:
         """Search through the selected unified backend mode without blocking Qt."""
@@ -850,7 +854,7 @@ class MainWindow(QMainWindow):
             self.message.setText(f"Evidence report generation failed: {message}")
             self.copy_report_button.setEnabled(bool(self.evidence_report and self.evidence_report.evidence))
         elif name == "search" and "Semantic index" in message:
-            self.message.setText("Semantic index has not been built yet. Please update the semantic index.")
+            self.message.setText("Semantic index has not been built yet. Run an index update; it also builds the semantic index.")
             self._refresh_semantic_status()
         else:
             self.message.setText(message)

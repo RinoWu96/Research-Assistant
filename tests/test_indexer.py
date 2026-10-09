@@ -11,7 +11,7 @@ import os
 import pymupdf
 
 from app.search.database import Database
-from app.search.indexer import Indexer
+from app.search.indexer import Indexer, IndexSummary, update_library
 from app.search.search_service import SearchService
 from app.zotero.models import Collection
 from tests.test_database import example_paper, example_attachment
@@ -146,3 +146,26 @@ class IndexerTests(unittest.TestCase):
         with patch("app.search.indexer.extract_pdf", side_effect=AssertionError("Unexpected legacy reparse")):
             result = self.indexer.run(client=self.client)
             self.assertEqual((result.skipped, result.pdfs_parsed), (1, 0))
+
+
+class UpdateLibraryTests(unittest.TestCase):
+    def test_semantic_update_follows_keyword_update(self):
+        with patch("app.embedding.semantic_index.SemanticIndex") as semantic:
+            semantic.return_value.update.return_value.describe.return_value = "semantic ok"
+            result = update_library(lambda: IndexSummary(papers=1, indexed=1), Path("x.db"))
+        semantic.assert_called_once_with(Path("x.db"))
+        self.assertIn("semantic ok", result.describe())
+
+    def test_cancelled_keyword_update_skips_semantic_update(self):
+        with patch("app.embedding.semantic_index.SemanticIndex") as semantic:
+            result = update_library(lambda: IndexSummary(cancelled=True), Path("x.db"))
+        semantic.assert_not_called()
+        self.assertIn("not updated", result.describe())
+
+    def test_semantic_failure_keeps_keyword_summary(self):
+        with patch("app.embedding.semantic_index.SemanticIndex") as semantic:
+            semantic.return_value.update.side_effect = RuntimeError("model missing")
+            result = update_library(lambda: IndexSummary(papers=2, updated=2), Path("x.db"))
+        self.assertIn("2 updated", result.describe())
+        self.assertIn("Semantic index update failed: model missing", result.describe())
+

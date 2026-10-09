@@ -31,6 +31,15 @@ class DatabaseTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_legacy_source_identity_adopts_real_server_id(self):
+        with Database(self.path) as db:
+            db.bind_source("local-personal-library")
+        with Database(self.path) as db:
+            db.bind_source("server-a")
+            self.assertEqual(db.connection.execute("SELECT value FROM meta WHERE key='source'").fetchone()[0], "server-a")
+            with self.assertRaises(DatabaseError):
+                db.bind_source("server-b")
+
     def test_persistence_fts_replacement_and_failure(self):
         with Database(self.path) as db:
             db.bind_source("test")

@@ -199,3 +199,40 @@ class Indexer:
     def rebuild(self, **kwargs) -> IndexSummary:
         """Explicitly re-extract the whole personal library, preserving stable row IDs."""
         return self.run(force=True, **kwargs)
+
+
+@dataclass
+class LibraryUpdateSummary:
+    """Keyword index outcome plus the semantic index update that follows it."""
+    index: IndexSummary
+    semantic: object | None = None
+    semantic_error: str | None = None
+
+    def describe(self) -> str:
+        if self.semantic is not None:
+            semantic = "Semantic index · " + self.semantic.describe()
+        elif self.semantic_error:
+            semantic = "Semantic index update failed: " + self.semantic_error
+        else:
+            semantic = "Semantic index not updated (keyword update cancelled)"
+        return self.index.describe() + "\n" + semantic
+
+
+def update_library(run_index: Callable[[], IndexSummary], database_path: Path = DATABASE_PATH, *,
+                   progress: Callable[[str], None] | None = None,
+                   cancel: Event | None = None) -> LibraryUpdateSummary:
+    """Run a keyword index update, then bring the semantic index up to date from it."""
+    report = progress or (lambda message: logger.info(message))
+    cancel = cancel or Event()
+    summary = LibraryUpdateSummary(run_index())
+    if summary.index.cancelled or cancel.is_set():
+        return summary
+    # Imported lazily: loading the embedding stack is only needed here.
+    from app.embedding.semantic_index import SemanticIndex
+    report("Updating semantic index…")
+    try:
+        summary.semantic = SemanticIndex(database_path).update(progress=report, cancel=cancel)
+    except Exception as exc:
+        logger.warning("Semantic index update failed", exc_info=True)
+        summary.semantic_error = str(exc)
+    return summary

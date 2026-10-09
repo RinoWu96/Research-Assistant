@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 import re
 from typing import Any
 
+# Source identity used when Zotero sends no Zotero-Server-ID header.
+LEGACY_SOURCE_IDENTITY = "local-personal-library"
+
 
 @dataclass(frozen=True)
 class Collection:

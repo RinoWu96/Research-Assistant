@@ -16,7 +16,8 @@ class Worker(QObject):
         # PyTorch's CPU runtime can stall when first initialized inside a Qt
         # QThread on Windows. A plain Python worker thread avoids that runtime
         # interaction; Qt signals remain safe to emit back to the GUI thread.
-        if name == "search":
+        # Index updates also embed new papers for the semantic index.
+        if name in {"search", "index"}:
             Thread(target=self._execute, args=(name, task), daemon=True).start()
             return
         self._execute(name, task)

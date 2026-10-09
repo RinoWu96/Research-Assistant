@@ -13,6 +13,9 @@ ZOTERO_API_URL = "http://localhost:23119/api/"
 # Same local service, avoiding slow IPv6 fallback observed on Windows.
 ZOTERO_FAST_API_URL = "http://127.0.0.1:23119/api/"
 REQUEST_TIMEOUT_SECONDS = 5.0
+# Zotero resolves attachment files while listing them; with storage on a
+# cloud-synced drive a 100-item page can take well over a minute.
+READ_TIMEOUT_SECONDS = 300.0
 
 def _default_app_data_dir() -> Path:
     """Return a stable writable data directory for source and frozen builds.

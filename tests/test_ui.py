@@ -383,18 +383,25 @@ class DesktopTests(unittest.TestCase):
         def update(*args, **kwargs):
             kwargs["progress"](summary.describe("Progress"))
             return summary
-        with patch("app.ui.main_window.Indexer.run", side_effect=update) as incremental:
+        semantic = patch("app.embedding.semantic_index.SemanticIndex")
+        with semantic as semantic_index,                 patch("app.ui.main_window.Indexer.run", side_effect=update) as incremental:
+            semantic_index.return_value.update.return_value.describe.return_value = "semantic done"
             self.window.index_button.click()
             self.assertFalse(self.window.rebuild_button.isEnabled())
             self.wait_idle()
             self.assertEqual(incremental.call_args.args, ("C1",))
             self.assertNotIn("force", incremental.call_args.kwargs)
             self.assertIn("1 indexed, 1 skipped, 1 updated, 0 failed", self.window.index_counts.text())
-        with patch("app.ui.main_window.Indexer.rebuild", return_value=summary) as rebuild:
+            # The semantic index is brought up to date in the same action.
+            semantic_index.return_value.update.assert_called_once()
+            self.assertIn("semantic done", self.window.index_counts.text())
+        with semantic as semantic_index,                 patch("app.ui.main_window.Indexer.rebuild", return_value=summary) as rebuild:
+            semantic_index.return_value.update.return_value.describe.return_value = "semantic done"
             self.window.rebuild_button.click()
             self.wait_idle()
             self.assertEqual(rebuild.call_args.args, ())
             self.assertNotIn("collection_key", rebuild.call_args.kwargs)
+            semantic_index.return_value.update.assert_called_once()
         self.window.query.setText("strain")
         self.window.start_search()
         self.wait_idle()

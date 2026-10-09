@@ -10,7 +10,7 @@ from typing import Iterator
 from app.config import DATABASE_PATH
 from app.parser.pdf_parser import PageText
 from app.search.text import normalize
-from app.zotero.models import Attachment, Collection, Paper
+from app.zotero.models import LEGACY_SOURCE_IDENTITY, Attachment, Collection, Paper
 
 SCHEMA_VERSION = 2
 
@@ -133,6 +133,12 @@ class Database:
     def bind_source(self, identity: str) -> None:
         """Reject accidental reuse of an index for a different Zotero instance."""
         row = self.connection.execute("SELECT value FROM meta WHERE key='source'").fetchone()
+        if row and row[0] == LEGACY_SOURCE_IDENTITY and identity != LEGACY_SOURCE_IDENTITY:
+            # Older Zotero builds sent no Zotero-Server-ID header, so the index was
+            # bound to the generic fallback; adopt the real ID instead of rejecting.
+            with self.transaction():
+                self.connection.execute("UPDATE meta SET value=? WHERE key='source'", (identity,))
+            return
         if row and row[0] != identity:
             raise DatabaseError("Zotero source changed. Use a new application database (--database PATH).")
         with self.transaction():

@@ -92,7 +92,7 @@ MCP 暴露四个工具：`find_evidence`、`find_evidence_for_claim`、`get_sour
 ## CLI
 
 ```powershell
-# 增量索引整个个人文库或一个集合
+# 增量索引整个个人文库或一个集合（同时增量更新语义索引；GUI 的增量更新/Full Rebuild 也一样）
 .\.venv\Scripts\python.exe -m app.cli index
 .\.venv\Scripts\python.exe -m app.cli index --collection Strain
 
@@ -103,7 +103,7 @@ MCP 暴露四个工具：`find_evidence`、`find_evidence_for_claim`、`get_sour
 .\.venv\Scripts\python.exe -m app.cli search "strain bandgap In2Se3"
 .\.venv\Scripts\python.exe -m app.cli stats
 
-# 语义索引维护
+# 仅维护语义索引（例如更换模型后 --rebuild）
 .\.venv\Scripts\python.exe -m app.cli semantic-index
 .\.venv\Scripts\python.exe -m app.cli semantic-index --rebuild
 ```
