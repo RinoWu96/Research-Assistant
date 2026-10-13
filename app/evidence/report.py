@@ -20,7 +20,7 @@ from app.evidence.evidence_service import EvidenceService
 from app.evidence.models import ClassifiedEvidence, EvidenceReport
 from app.evidence.paper_identity import PaperIdentity, load_paper_records, normalize_doi, resolve_identities
 from app.evidence.ranker import rank
-from app.search.database import ReadOnlyDatabase
+from app.search.database import ReadOnlyDatabase, supplementary_attachment_keys
 from app.search.hybrid_search import UnifiedSearchService
 
 
@@ -45,6 +45,7 @@ class _Candidate:
     pdf_path: str
     text: str
     retrieval_score: float
+    supplementary: bool = False
 
 
 class EvidenceReportService:
@@ -68,7 +69,7 @@ class EvidenceReportService:
 
         candidates = [_Candidate(p.paper_id, p.zotero_key, passage.attachment_key, p.title, p.authors,
                                   p.journal, p.year, p.doi, passage.physical_pdf_page, passage.pdf_path,
-                                  passage.original_text, passage.hybrid_score)
+                                  passage.original_text, passage.hybrid_score, passage.supplementary)
                       for p in pack.papers for passage in p.passages]
 
         with ReadOnlyDatabase(self.database_path) as db:
@@ -98,7 +99,8 @@ class EvidenceReportService:
                     evidence_confidence=classification.evidence_confidence, rationale=classification.rationale,
                     claim_match=classification.claim_match, stimulus_match=classification.stimulus_match,
                     material_match=classification.material_match, phase_match=classification.phase_match,
-                    classification_source_type=classification.source_type, provenance="original_retrieval"))
+                    classification_source_type=classification.source_type, provenance="original_retrieval",
+                    supplementary=candidate.supplementary))
 
             traced_items: list[ClassifiedEvidence] = []
             already_shown = {(c.attachment_key, c.physical_pdf_page, c.text) for c in candidates}
@@ -140,6 +142,10 @@ class EvidenceReportService:
                             classification_source_type=classification.source_type,
                             provenance="citation_traced", parent_evidence_id=items[index].evidence_id))
 
+        if traced_items:
+            with ReadOnlyDatabase(self.database_path) as db:
+                si = supplementary_attachment_keys(db.connection, [i.attachment_key for i in traced_items])
+            traced_items = [replace(i, supplementary=i.attachment_key in si) for i in traced_items]
         ranked = rank(items + traced_items)
         return EvidenceReport(query, tuple(ranked), pack.candidate_count, pack.duplicate_passages_removed,
                               duplicate_papers_merged)

@@ -10,9 +10,19 @@ from typing import Iterator
 from app.config import DATABASE_PATH
 from app.parser.pdf_parser import PageText
 from app.search.text import normalize
-from app.zotero.models import LEGACY_SOURCE_IDENTITY, Attachment, Collection, Paper
+from app.zotero.models import LEGACY_SOURCE_IDENTITY, Attachment, Collection, Paper, is_supplementary
 
 SCHEMA_VERSION = 2
+
+
+def supplementary_attachment_keys(connection: sqlite3.Connection, keys) -> set[str]:
+    """Which of `keys` are supporting-information attachments (tolerates pre-migration databases)."""
+    keys = list(dict.fromkeys(keys))
+    if not keys or "supplementary" not in {r[1] for r in connection.execute("PRAGMA table_info(attachments)")}:
+        return set()
+    marks = ",".join("?" for _ in keys)
+    return {r[0] for r in connection.execute(
+        f"SELECT zotero_key FROM attachments WHERE supplementary=1 AND zotero_key IN ({marks})", keys)}
 
 
 class DatabaseError(RuntimeError):
@@ -108,6 +118,8 @@ class Database:
                     self.connection.execute("ALTER TABLE papers ADD COLUMN item_type TEXT NOT NULL DEFAULT 'unknown'")
                 if "content_hash" not in {r[1] for r in self.connection.execute("PRAGMA table_info(attachments)")}:
                     self.connection.execute("ALTER TABLE attachments ADD COLUMN content_hash TEXT")
+                if "supplementary" not in {r[1] for r in self.connection.execute("PRAGMA table_info(attachments)")}:
+                    self.connection.execute("ALTER TABLE attachments ADD COLUMN supplementary INTEGER NOT NULL DEFAULT 0")
             self.connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.connection.commit()
         except (sqlite3.Error, OSError, DatabaseError) as exc:
@@ -177,13 +189,14 @@ class Database:
         stamp = datetime.now(timezone.utc).isoformat()
         with self.transaction():
             self.connection.execute("""INSERT INTO attachments
-                (paper_id,zotero_key,title,pdf_path,fingerprint,status,error,last_indexed,content_hash)
-                VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(zotero_key) DO UPDATE SET
+                (paper_id,zotero_key,title,pdf_path,fingerprint,status,error,last_indexed,content_hash,supplementary)
+                VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(zotero_key) DO UPDATE SET
                 paper_id=excluded.paper_id,title=excluded.title,pdf_path=excluded.pdf_path,
                 fingerprint=excluded.fingerprint,status=excluded.status,error=excluded.error,
-                last_indexed=excluded.last_indexed,content_hash=excluded.content_hash""",
+                last_indexed=excluded.last_indexed,content_hash=excluded.content_hash,
+                supplementary=excluded.supplementary""",
                 (paper_id, attachment.key, attachment.title, str(path) if path else None,
-                 fingerprint, status, error, stamp, content_hash))
+                 fingerprint, status, error, stamp, content_hash, int(is_supplementary(attachment))))
             attachment_id = self.attachment(attachment.key)["id"]
             self.connection.execute("DELETE FROM pages WHERE attachment_id=?", (attachment_id,))
             self.connection.executemany("INSERT INTO pages(attachment_id,page_number,text,search_text) VALUES(?,?,?,?)",

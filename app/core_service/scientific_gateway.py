@@ -81,7 +81,8 @@ def get_source(cache: ReportCache, database_path: Path, report_id: str,
             start_page=actual_start, end_page=actual_end, text=text, pages=pages,
             evidence_passage=item.original_text, status=status),
         provenance=ProvenanceInfo(
-            attachment_key=item.attachment_key, origin=origin,
+            attachment_key=item.attachment_key, supplementary=item.supplementary,
+            origin=origin,
             parent_evidence_id=item.parent_evidence_id),
     )
 

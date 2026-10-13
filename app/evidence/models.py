@@ -26,6 +26,7 @@ class EvidencePassage:
     keyword_score: float | None
     chunk_id: int | None
     pdf_path: str
+    supplementary: bool = False
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,8 @@ class EvidencePack:
             for passage in passages:
                 lines.extend([
                     f"### Candidate passage · PDF page {passage.physical_pdf_page}", "",
-                    f"PDF attachment key: {passage.attachment_key}", "",
+                    f"PDF attachment key: {passage.attachment_key}"
+                    + (" (supporting information)" if passage.supplementary else ""), "",
                     *[f"> {line}" if line else ">" for line in passage.original_text.splitlines()], "",
                 ])
         return "\n".join(lines).rstrip() + "\n"
@@ -144,6 +146,7 @@ class ClassifiedEvidence:
     provenance: Literal["original_retrieval", "citation_traced"] = "original_retrieval"
     parent_evidence_id: str | None = None
     citation_traces: tuple[CitationTrace, ...] = field(default_factory=tuple)
+    supplementary: bool = False
 
 
 @dataclass(frozen=True)
@@ -208,7 +211,8 @@ class EvidenceReport:
             for item in group:
                 provenance_note = (f" _(via citation tracing from {item.parent_evidence_id})_"
                                    if item.provenance == "citation_traced" else "")
-                block.append(f"- Passage (Zotero item {item.zotero_key}, attachment {item.attachment_key}, "
+                si_note = ", supporting information" if item.supplementary else ""
+                block.append(f"- Passage (Zotero item {item.zotero_key}, attachment {item.attachment_key}{si_note}, "
                              f"PDF page {item.physical_pdf_page}){provenance_note}:")
                 block.append("")
                 block.extend(f"  > {line}" if line else "  >" for line in item.original_text.splitlines())

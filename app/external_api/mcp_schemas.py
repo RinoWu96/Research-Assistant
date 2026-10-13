@@ -36,6 +36,9 @@ class PassageInfo(BaseModel):
 
 class ProvenanceInfo(BaseModel):
     attachment_key: str
+    # True when the passage comes from a supporting-information PDF found in
+    # the paper's Zotero storage folder rather than the main article.
+    supplementary: bool = False
     origin: Literal["original_retrieval", "citation_tracing"]
     parent_evidence_id: str | None
 

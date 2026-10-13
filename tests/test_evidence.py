@@ -94,5 +94,28 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual((len(unique), removed), (3, 1))
 
 
+class SupplementaryEvidenceTests(unittest.TestCase):
+    def test_passages_from_supporting_information_are_flagged(self):
+        from dataclasses import replace
+        from app.search.database import Database
+        from tests.test_database import example_attachment, example_paper
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "literature.db"
+            with Database(path) as db:
+                with db.transaction():
+                    main_id = db.save_paper(example_paper())
+                    si_id = db.save_paper(replace(example_paper(), key="P2"))
+                db.save_attachment(main_id, example_attachment("A1"), None, None, "OK", None)
+                db.save_attachment(si_id, replace(example_attachment("A2"), title="Supplementary Information PDF"),
+                                   None, None, "OK", None)
+            stub = StubSearch([result(1, 1, "Main text passage.", .05, chunk=1),
+                               result(2, 4, "Raman fitting details in the SI.", .04, chunk=2)])
+            pack = EvidenceService(path, stub).build_evidence_pack("Raman")
+        flags = {p.attachment_key: p.supplementary for paper in pack.papers for p in paper.passages}
+        self.assertEqual(flags, {"A1": False, "A2": True})
+        self.assertIn("A2 (supporting information)", pack.to_markdown())
+
+
+
 if __name__ == "__main__":
     unittest.main()

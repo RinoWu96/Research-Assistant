@@ -136,6 +136,7 @@ def _to_evidence_item(item: ClassifiedEvidence) -> EvidenceItem:
         passage=PassageInfo(text=item.original_text, pdf_page=item.physical_pdf_page),
         provenance=ProvenanceInfo(
             attachment_key=item.attachment_key,
+            supplementary=item.supplementary,
             origin=_origin(item),
             parent_evidence_id=item.parent_evidence_id,
         ),

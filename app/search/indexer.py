@@ -1,7 +1,7 @@
 """Incremental, read-only Zotero ingestion with exclusive item outcome counts."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -16,6 +16,7 @@ from app.parser.pdf_parser import extract_pdf, path_from_file_url
 from app.search.database import Database, DatabaseError
 from app.search.text import NORMALIZER_VERSION
 from app.zotero.client import ZoteroClient
+from app.zotero.models import SUPPLEMENTARY_KEY_MARKER, Attachment, is_supplementary
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,51 @@ def content_digest(path: Path, cancel: Event) -> str | None:
                 return None
             digest.update(chunk)
     return None if cancel.is_set() else digest.hexdigest()
+
+
+STORED_LINK_MODES = {"imported_file", "imported_url"}
+
+
+def _storage_pdfs(folder: Path) -> list[Path]:
+    try:
+        return sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
+    except OSError:
+        return []
+
+
+def with_storage_supplements(attachments: tuple[Attachment, ...] | list[Attachment]) -> list[Attachment]:
+    """Add PDFs saved into a stored attachment's Zotero storage folder without
+    being registered in Zotero (usually supporting information).
+
+    Only Zotero-managed folders (named after the attachment key) are scanned,
+    never linked-file directories. If Zotero's recorded file is missing and the
+    folder holds exactly one PDF, that PDF is the renamed main text, not an SI.
+    """
+    result: list[Attachment] = []
+    for attachment in attachments:
+        result.append(attachment)
+        if attachment.link_mode not in STORED_LINK_MODES or not attachment.local_url:
+            continue
+        try:
+            registered = path_from_file_url(attachment.local_url)
+        except ValueError:
+            continue
+        folder = registered.parent
+        if folder.name != attachment.key:
+            continue
+        pdfs = _storage_pdfs(folder)
+        if not registered.is_file():
+            if len(pdfs) == 1:
+                result[-1] = replace(attachment, local_url=pdfs[0].as_uri())
+            continue
+        for pdf in pdfs:
+            if pdf.name == registered.name:
+                continue
+            suffix = hashlib.sha1(pdf.name.lower().encode("utf-8")).hexdigest()[:8]
+            result.append(Attachment(f"{attachment.key}{SUPPLEMENTARY_KEY_MARKER}{suffix}",
+                                     f"Supplementary: {pdf.name}", "application/pdf", pdf.name,
+                                     "storage_supplement", None, pdf.as_uri()))
+    return result
 
 
 class Indexer:
@@ -109,7 +155,8 @@ class Indexer:
                     report(f"Attachment listing failed: {paper.key}; previous PDF cache retained.")
                 elif not paper.attachments:
                     summary.without_pdf += 1
-                for attachment in paper.attachments if paper.attachments_complete else ():
+                attachments = with_storage_supplements(paper.attachments) if paper.attachments_complete else []
+                for attachment in attachments:
                     if cancel.is_set():
                         summary.cancelled = True
                         break
@@ -133,14 +180,16 @@ class Indexer:
                         same_parser = bool(cached and cached["fingerprint"] and
                             cached["fingerprint"].split(":")[-2:] == fingerprint.split(":")[-2:])
                         if not force and cached and cached["status"] == "OK" and same_content and same_parser:
-                            attachment_changed = cached["title"] != attachment.title or cached["pdf_path"] != str(path) or cached["paper_id"] != paper_id
+                            supplementary = int(is_supplementary(attachment))
+                            attachment_changed = (cached["title"] != attachment.title or cached["pdf_path"] != str(path)
+                                                  or cached["paper_id"] != paper_id or cached["supplementary"] != supplementary)
                             changed |= attachment_changed
                             # Legacy hash backfill and timestamp-only changes do not reparse PDF text.
                             if attachment_changed or cached["fingerprint"] != fingerprint or cached["content_hash"] != digest:
                                 with db.transaction():
                                     db.connection.execute("""UPDATE attachments SET title=?,pdf_path=?,paper_id=?,
-                                        fingerprint=?,content_hash=? WHERE id=?""", (attachment.title, str(path),
-                                        paper_id, fingerprint, digest, cached["id"]))
+                                        fingerprint=?,content_hash=?,supplementary=? WHERE id=?""", (attachment.title,
+                                        str(path), paper_id, fingerprint, digest, supplementary, cached["id"]))
                             continue
                         result = extract_pdf(path, paper_id=str(paper_id), zotero_key=paper.key,
                             attachment_key=attachment.key, title=paper.title, doi=paper.doi, cancelled=cancel.is_set)
@@ -167,7 +216,7 @@ class Indexer:
                 if summary.cancelled:
                     break
                 if paper.attachments_complete:
-                    valid = {a.key for a in paper.attachments}
+                    valid = {a.key for a in attachments}
                     obsolete = [r[0] for r in db.connection.execute(
                         "SELECT zotero_key FROM attachments WHERE paper_id=?", (paper_id,)) if r[0] not in valid]
                     if obsolete:

@@ -6,6 +6,7 @@ import re
 
 from app.config import DATABASE_PATH
 from app.evidence.models import EvidencePack, EvidencePassage, PaperEvidence
+from app.search.database import DatabaseError, ReadOnlyDatabase, supplementary_attachment_keys
 from app.search.hybrid_search import HybridResult, UnifiedSearchService
 
 
@@ -52,6 +53,7 @@ def _select_passages(results: list[HybridResult], limit: int) -> list[HybridResu
 class EvidenceService:
     def __init__(self, database_path: Path = DATABASE_PATH,
                  search_service: UnifiedSearchService | None = None) -> None:
+        self.database_path = database_path
         self.search_service = search_service or UnifiedSearchService(database_path)
 
     def build_evidence_pack(self, query: str, *, collection: str | None = None,
@@ -81,6 +83,8 @@ class EvidenceService:
             score = ordered[0].hybrid_score + (0.25 * ordered[1].hybrid_score if len(ordered) > 1 else 0)
             ranked.append((score, paper_id, results))
         ranked.sort(key=lambda item: (-item[0], item[1]))
+        supplementary = self._supplementary_keys(
+            [r.attachment_key for _, _, results in ranked[:max_papers] for r in results])
         papers = []
         for relevance, _, results in ranked[:max_papers]:
             selected = _select_passages(results, max_passages_per_paper)
@@ -90,10 +94,18 @@ class EvidenceService:
                 tuple(result.authors), result.year, result.journal, result.doi, result.page,
                 result.text, result.hybrid_score, result.semantic_score,
                 result.keyword_score, result.chunk_id, result.pdf_path,
+                result.attachment_key in supplementary,
             ) for result in selected)
             papers.append(PaperEvidence(best.paper_id, best.zotero_key, best.title,
                 tuple(best.authors), best.year, best.journal, best.doi, relevance, passages))
         return EvidencePack(query, tuple(papers), len(candidates), removed)
+
+    def _supplementary_keys(self, keys: list[str]) -> set[str]:
+        try:
+            with ReadOnlyDatabase(self.database_path) as db:
+                return supplementary_attachment_keys(db.connection, keys)
+        except DatabaseError:
+            return set()
 
 
 def build_evidence_pack(query: str, **options) -> EvidencePack:

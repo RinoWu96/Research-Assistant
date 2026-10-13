@@ -11,9 +11,9 @@ import os
 import pymupdf
 
 from app.search.database import Database
-from app.search.indexer import Indexer, IndexSummary, update_library
+from app.search.indexer import Indexer, IndexSummary, update_library, with_storage_supplements
 from app.search.search_service import SearchService
-from app.zotero.models import Collection
+from app.zotero.models import Collection, is_supplementary, is_supplementary_key
 from tests.test_database import example_paper, example_attachment
 
 
@@ -168,4 +168,89 @@ class UpdateLibraryTests(unittest.TestCase):
             result = update_library(lambda: IndexSummary(papers=2, updated=2), Path("x.db"))
         self.assertIn("2 updated", result.describe())
         self.assertIn("Semantic index update failed: model missing", result.describe())
+
+
+def write_pdf(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with pymupdf.open() as doc:
+        doc.new_page().insert_text((72, 72), text)
+        doc.save(path)
+
+
+class StorageSupplementTests(unittest.TestCase):
+    """Unregistered PDFs in a Zotero storage folder are indexed as SI."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.folder = self.root / "storage" / "A1"
+        self.main = self.folder / "paper.pdf"
+        write_pdf(self.main, "strain bandgap In2Se3")
+        self.si = self.folder / "nl2c04133_si_001.pdf"
+        write_pdf(self.si, "supplementary Raman spectra")
+        attachment = replace(example_attachment(), local_url=self.main.as_uri())
+        self.client = FakeClient([replace(example_paper(), attachments=(attachment,))])
+        self.indexer = Indexer(self.root / "index.db")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def attachment_rows(self):
+        with Database(self.root / "index.db") as db:
+            return {r["zotero_key"]: (r["title"], r["status"]) for r in db.connection.execute(
+                "SELECT zotero_key,title,status FROM attachments")}
+
+    def test_unregistered_pdf_is_indexed_as_supplementary(self):
+        self.indexer.run(client=self.client)
+        rows = self.attachment_rows()
+        si_keys = [k for k in rows if is_supplementary_key(k)]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(si_keys), 1)
+        self.assertTrue(si_keys[0].startswith("A1"))
+        self.assertEqual(rows[si_keys[0]], ("Supplementary: nl2c04133_si_001.pdf", "OK"))
+        self.assertTrue(SearchService(self.root / "index.db").search("Raman"))
+        # Stable key: an unchanged SI is skipped, not re-added.
+        self.assertEqual(self.indexer.run(client=self.client).skipped, 1)
+        self.assertEqual(self.attachment_rows().keys(), rows.keys())
+
+    def test_registered_supplementary_attachment_is_flagged(self):
+        from app.search.database import supplementary_attachment_keys
+        si = replace(example_attachment("B2"), title="Supplementary Information PDF")
+        self.assertTrue(is_supplementary(si))
+        self.assertFalse(is_supplementary(replace(example_attachment(), filename="Si et al. - 2024 - growth on Si(111).pdf")))
+        self.indexer.run(client=self.client)
+        with Database(self.root / "index.db") as db:
+            flagged = supplementary_attachment_keys(db.connection, ["A1"] + list(self.attachment_rows()))
+        self.assertEqual(len(flagged), 1)
+        self.assertNotIn("A1", flagged)
+
+    def test_removed_supplementary_file_leaves_the_index(self):
+        self.indexer.run(client=self.client)
+        self.si.unlink()
+        self.indexer.run(client=self.client)
+        self.assertFalse(any(is_supplementary_key(k) for k in self.attachment_rows()))
+        self.assertEqual(SearchService(self.root / "index.db").search("Raman"), [])
+
+    def test_linked_file_folders_are_not_scanned(self):
+        linked = replace(example_attachment(), link_mode="linked_file", local_url=self.main.as_uri())
+        self.assertEqual(with_storage_supplements((linked,)), [linked])
+        elsewhere = self.root / "library" / "paper.pdf"
+        write_pdf(elsewhere, "x")
+        write_pdf(self.root / "library" / "other.pdf", "y")
+        stored = replace(example_attachment(), local_url=elsewhere.as_uri())
+        self.assertEqual(with_storage_supplements((stored,)), [stored])
+
+    def test_missing_registered_file_uses_the_single_pdf_as_main_text(self):
+        self.si.unlink()
+        renamed = self.folder / "Kang et al_2020_renamed.pdf"
+        self.main.rename(renamed)
+        recorded = replace(example_attachment(), local_url=self.main.as_uri())
+        result = with_storage_supplements((recorded,))
+        self.assertEqual([a.key for a in result], ["A1"])
+        self.assertEqual(result[0].local_url, renamed.as_uri())
+
+    def test_ambiguous_folder_with_missing_registered_file_adds_nothing(self):
+        self.main.rename(self.folder / "renamed.pdf")
+        recorded = replace(example_attachment(), local_url=self.main.as_uri())
+        self.assertEqual(with_storage_supplements((recorded,)), [recorded])
 
