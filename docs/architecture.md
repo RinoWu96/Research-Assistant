@@ -1,4 +1,4 @@
-# Research Assistant V0.7.1 architecture
+# Research Assistant V0.7.2 architecture
 
 ## Runtime topology
 

@@ -6,6 +6,9 @@ $dist = Join-Path $project 'dist'
 $release = Join-Path $project 'release'
 $python = Join-Path $project '.venv-build\Scripts\python.exe'
 $spec = Join-Path $PSScriptRoot 'research-assistant.spec'
+$version = (Select-String -LiteralPath (Join-Path $project 'app\version.py') -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+if (-not $version) { throw 'Cannot read __version__ from app\version.py.' }
+$name = "ResearchAssistant-$version-windows-x64"
 
 if (-not (Test-Path -LiteralPath $python)) {
     throw 'Create .venv-build with official CPython 3.12 and install requirements-build.txt first.'
@@ -22,13 +25,16 @@ foreach ($path in @($build, $dist, $release)) {
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
 }
 
-& $python -m PyInstaller --noconfirm --clean --workpath $build --distpath $dist $spec
+# PyInstaller logs to stderr; under 'Stop' Windows PowerShell would treat that as a failure.
+$ErrorActionPreference = 'Continue'
+& $python -m PyInstaller --noconfirm --clean --workpath $build --distpath $dist $spec 2>&1 | Out-Host
+$ErrorActionPreference = 'Stop'
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
-$bundle = Join-Path $dist 'ResearchAssistant-0.7.1-windows-x64'
+$bundle = Join-Path $dist $name
 Copy-Item -LiteralPath (Join-Path $project 'packaging\PORTABLE-README.txt') -Destination $bundle
 
 New-Item -ItemType Directory -Path $release | Out-Null
-$archive = Join-Path $release 'ResearchAssistant-0.7.1-windows-x64.zip'
+$archive = Join-Path $release "$name.zip"
 Compress-Archive -LiteralPath $bundle -DestinationPath $archive -CompressionLevel Optimal
 Get-FileHash -Algorithm SHA256 -LiteralPath $archive | Format-List

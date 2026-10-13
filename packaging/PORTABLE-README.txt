@@ -1,4 +1,4 @@
-Research Assistant 0.7.1 - Windows x64 portable release
+Research Assistant 0.7.2 - Windows x64 portable release
 ========================================================
 
 Start ResearchAssistant.exe to open the desktop application. It starts the

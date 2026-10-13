@@ -1,10 +1,10 @@
-# Research Assistant V0.7.1
+# Research Assistant V0.7.2
 
 Windows 本地、只读、可溯源的 Zotero 科研证据助手。它从本地 PDF 中检索原文，保留
 Zotero 条目、附件、DOI 和物理页码，并把证据区分为 DIRECT、SECONDARY、LIMITING、
 CONTEXTUAL 和 UNCERTAIN。
 
-V0.7.1 的稳定架构是：
+V0.7.2 的稳定架构是：
 
 ```text
 GUI / Codex MCP / future clients -> Persistent Core -> Evidence Engine -> local literature
@@ -53,9 +53,11 @@ Zotero 中需启用：Settings → Advanced →
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
 .\packaging\build-windows.ps1
+# 只改了代码、依赖未变时：只替换现有便携版中的三个 EXE
+.\packaging\build-incremental.ps1
 ```
 
-产物位于 `release/ResearchAssistant-0.7.1-windows-x64.zip`。解压后运行
+产物位于 `release/ResearchAssistant-0.7.2-windows-x64.zip`。解压后运行
 `ResearchAssistant.exe`。GUI 关闭后 Core 继续在 Windows 通知区域运行；双击托盘图标
 或右键选择“打开 Research Assistant”可重新打开 GUI。
 
@@ -67,7 +69,7 @@ Zotero 中需启用：Settings → Advanced →
 
 环境变量 `RESEARCH_ASSISTANT_DATA_DIR` 可以覆盖源码版和便携版默认目录。EXE、`_internal`
 目录及随附文件必须保持在同一解压目录中。详见
-[V0.7.1 发布说明](docs/v0.7.1-release.md)。
+[V0.7.1 发布说明](docs/v0.7.1-release.md)和 [V0.7.2 更新说明](docs/v0.7.2-release.md)。
 
 ## Codex MCP
 

@@ -10,7 +10,9 @@ $build = Join-Path $project 'build'
 $staging = Join-Path $build 'incremental-dist'
 $python = Join-Path $project '.venv-build\Scripts\python.exe'
 $spec = Join-Path $PSScriptRoot 'research-assistant.spec'
-$name = 'ResearchAssistant-0.7.1-windows-x64'
+$version = (Select-String -LiteralPath (Join-Path $project 'app\version.py') -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+if (-not $version) { throw 'Cannot read __version__ from app\version.py.' }
+$name = "ResearchAssistant-$version-windows-x64"
 $bundle = Join-Path (Join-Path $project 'dist') $name
 $executables = @('ResearchAssistant.exe', 'ResearchAssistantCore.exe', 'ResearchAssistantMCP.exe')
 

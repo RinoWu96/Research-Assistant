@@ -11,7 +11,7 @@ from app.version import __version__
 
 class FrozenDataDirectoryTests(unittest.TestCase):
     def test_release_version(self):
-        self.assertEqual(__version__, "0.7.1")
+        self.assertEqual(__version__, "0.7.2")
 
     def test_frozen_default_uses_local_app_data_not_bundle_directory(self):
         with patch.object(config.sys, "frozen", True, create=True), \

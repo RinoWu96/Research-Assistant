@@ -2,6 +2,9 @@
 from pathlib import Path
 
 project = Path(SPECPATH).parent
+version_ns = {}
+exec((project / "app" / "version.py").read_text(encoding="utf-8"), version_ns)
+bundle_name = f"ResearchAssistant-{version_ns['__version__']}-windows-x64"
 
 analysis = Analysis(
     [str(project / "bundle_main.py")],
@@ -33,4 +36,4 @@ mcp_exe = EXE(mcp_pyz, mcp_analysis.scripts, mcp_analysis.binaries,
 
 coll = COLLECT(gui_exe, core_exe, mcp_exe, analysis.binaries, analysis.datas,
                strip=False, upx=False, upx_exclude=[],
-               name="ResearchAssistant-0.7.1-windows-x64")
+               name=bundle_name)
