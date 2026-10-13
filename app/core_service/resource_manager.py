@@ -27,7 +27,7 @@ import threading
 from app.config import DATABASE_PATH
 from app.core_service.state import CoreState
 from app.core_service.report_cache import ReportCache
-from app.search.database import Database
+from app.search.database import Database, ReadOnlyDatabase
 from app.search.hybrid_search import UnifiedSearchService
 
 logger = logging.getLogger(__name__)
@@ -81,6 +81,17 @@ class ResourceManager:
             return self._search_service
 
     def status(self) -> ResourceStatus:
+        # Index updates run outside the Core, so count papers live rather than
+        # reporting the number seen at startup; keep the last count on failure.
+        if self._database_ready:
+            try:
+                with ReadOnlyDatabase(self.database_path) as db:
+                    (paper_count,) = db.connection.execute("SELECT COUNT(*) FROM papers").fetchone()
+            except Exception:
+                logger.debug("Live paper count unavailable.", exc_info=True)
+            else:
+                with self._lock:
+                    self._paper_count = paper_count
         with self._lock:
             return ResourceStatus(self._state, self._database_ready, self._semantic_index_ready,
                                    self._embedding_model_ready, self._paper_count, self._error)

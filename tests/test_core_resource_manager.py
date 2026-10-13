@@ -14,6 +14,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from app.search.database import Database
 from app.core_service.resource_manager import SEMANTIC_INDEX_FILES, ResourceManager
 from app.core_service.state import CoreState
 from tests.evidence_report_fixtures import build_in2se3_corpus
@@ -79,6 +80,18 @@ class ResourceManagerStateTests(unittest.TestCase):
         self.assertGreater(status.paper_count, 0)
         self.assertIsNotNone(manager.search_service)
         self.assertIsNone(status.error)
+
+    def test_paper_count_follows_index_updates_after_startup(self):
+        database = _make_database_with_semantic_files(self.root)
+        with patch("app.core_service.resource_manager.UnifiedSearchService") as ctor:
+            ctor.return_value.semantic.index.embedder.dimension = 3
+            manager = ResourceManager(database)
+            manager.start_background_init().join(timeout=5)
+        before = manager.status().paper_count
+        with Database(database) as db:
+            with db.transaction():
+                db.connection.execute("DELETE FROM papers WHERE id=(SELECT MIN(id) FROM papers)")
+        self.assertEqual(manager.status().paper_count, before - 1)
 
     def test_missing_semantic_index_files_is_an_error_and_never_touches_the_embedder(self):
         database = self.root / "literature.db"
