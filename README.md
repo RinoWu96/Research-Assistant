@@ -1,5 +1,7 @@
 # Research Assistant V0.7.2
 
+**中文** | [English](README.en.md)
+
 Windows 本地、只读、可溯源的 Zotero 科研证据助手。它从本地 PDF 中检索原文，保留
 Zotero 条目、附件、DOI 和物理页码，并把证据区分为 DIRECT、SECONDARY、LIMITING、
 CONTEXTUAL 和 UNCERTAIN。
@@ -18,7 +20,9 @@ handle cache 的唯一所有者。GUI 和 MCP 都是轻量客户端。所有科�
 - Zotero Local API GET-only；不打开或修改 `zotero.sqlite`。
 - PDF 逐物理页提取、原文展示和页码回溯。
 - SQLite FTS5、BGE semantic search 和 RRF hybrid retrieval。
-- 增量索引、内容哈希、明确的 Full Rebuild、失败隔离和取消。
+- 增量索引、内容哈希、明确的 Full Rebuild、失败隔离和取消；关键词索引与语义索引一次更新。
+- 支撑信息（SI）：放在文献 Zotero storage 文件夹中、未在 Zotero 登记的 SI PDF 也会随该文献
+  入库；证据输出中以 `supplementary` 标出来自 SI 的段落。
 - Evidence Pack 与分类 Evidence Report。
 - 引用溯源、保守的论文身份合并和来源去重。
 - `find_evidence_for_claim`、`get_source` 和 `verify_citation`。
