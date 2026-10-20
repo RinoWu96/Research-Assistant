@@ -167,3 +167,7 @@ V0.7.0 release acceptance verified all of the following:
 See [docs/architecture.md](docs/architecture.md) for the architecture and
 [docs/v0.7-scientific-evidence-tools.md](docs/v0.7-scientific-evidence-tools.md)
 for the scientific tool contracts.
+
+## License
+
+[MIT](LICENSE) © 2026 Rino Wu

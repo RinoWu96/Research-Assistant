@@ -137,3 +137,7 @@ handle 生命周期、Core PID 稳定性及数据库/语义索引 SHA-256 不变
 
 架构详见 [docs/architecture.md](docs/architecture.md)，科学工具契约详见
 [docs/v0.7-scientific-evidence-tools.md](docs/v0.7-scientific-evidence-tools.md)。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 Rino Wu
